@@ -1,0 +1,474 @@
+---
+title: "Description of the human data and pathways in the NASH IST case study"
+author: "Sergio Picart-Armada"
+date: "7th December, 2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, 
+                      error = FALSE, warning = FALSE, 
+                      fig.height = 4)
+```
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+date()
+```
+
+Load data and libraries
+
+```{r}
+library(SummarizedExperiment)
+
+library(data.table)
+library(tidyverse)
+library(magrittr)
+
+library(ggplot2)
+library(ggpmisc)
+library(plotly)
+library(pheatmap)
+
+library(openxlsx)
+library(clusterProfiler)
+
+stopifnot(packageVersion("IST") >= "0.5.26")
+library(IST)
+
+# new config file
+conf <- config::get()
+
+source("../00_helpers.R")
+
+```
+
+```{r}
+# get directory from config.yml file
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$analysis_nash_genesets)
+if (!dir.exists(dir_out)) dir.create(dir_out)
+```
+
+# Load data
+
+```{r}
+se.human <- readRDS(paste0("../", conf$interimdata_nash_human))
+list.sig <- readRDS(paste0("../", conf$interimdata_nash_signatures_lfc))
+list.sig.signif <- readRDS(paste0("../", conf$interimdata_nash_signatures_lfc_signif))
+meta.sig <- read.csv(paste0("../", conf$interimdata_nash_signatures_meta))
+list.orth <- IST::data.list.orth
+
+df.kegg <- read.csv(paste0("../", conf$interimdata_genesets_kegg))
+df.reactome <- read.csv(paste0("../", conf$interimdata_genesets_reactome))
+
+# thresholds
+th.logfc <- conf$threshold_dge_logfc
+th.fdr <- conf$threshold_dge_fdr
+
+# human signatures
+sig.hsa <- subset(meta.sig, organism.name == "Human")$contrast.label %>% as.character
+
+
+```
+
+
+# Human expression descriptive stats
+
+```{r}
+
+se.human
+
+```
+
+```{r}
+
+sum.human <- summarise_dataset(
+  se.human,
+  return.interim = TRUE) 
+
+```
+Fibrosis stage
+
+```{r}
+ggplot(sum.human$df.plot, aes(x = PC1, y = PC2, fill = fibrosis_stage)) +
+  geom_point(pch = 21) +
+  # scale_colour_manual(values = c("FALSE" = "gray70", "TRUE" = "black")) +
+  theme_bw()
+
+ggsave(paste0(dir_out, "/pca_human.pdf"))
+```
+
+Numbers by phase
+
+```{r}
+
+table(se.human$fibrosis_stage)
+
+```
+
+
+Steatosis score
+
+```{r}
+ggplot(sum.human$df.plot, aes(x = PC1, y = PC2, fill = steatosis_score)) +
+  geom_point(pch = 21) +
+  # scale_colour_manual(values = c("FALSE" = "gray70", "TRUE" = "black")) +
+  theme_bw()
+```
+
+Batch effect
+
+```{r}
+
+ggplot(sum.human$df.plot, aes(x = PC1, y = PC2, fill = Batch)) +
+  geom_point(pch = 21) +
+  # scale_fill_gradient(low = "white", high = "indianred") +
+  theme_bw()
+
+```
+
+Age effect
+
+```{r}
+
+ggplot(sum.human$df.plot, aes(x = PC1, y = PC2, fill = age)) +
+  geom_point(pch = 21) +
+  scale_fill_gradient(low = "white", high = "indianred") +
+  theme_bw()
+
+```
+
+
+# Human signatures descriptive stats
+
+Distribution of logFCs
+
+```{r, fig.width=7.5}
+dplyr::bind_rows(list.sig.signif[sig.hsa], .id = "contrast") %>%
+  dplyr::mutate(disease = ifelse(grepl("disease", contrast), "Disease", "Recovery")) %>%
+  ggplot(aes(x = logFC)) +
+  geom_histogram() +
+  facet_wrap(disease~contrast, scales = "fixed", nrow = 2) +
+  theme_bw()
+
+ggsave(paste0(dir_out, "/logfc_histograms.pdf"))
+```
+
+```{r, fig.width=7.5}
+dplyr::bind_rows(list.sig.signif[sig.hsa], .id = "contrast") %>%
+  dplyr::mutate(mlog10FDR = -log10(adj.P.Val), 
+                disease = ifelse(grepl("disease", contrast), "Disease", "Recovery")) %>%
+  ggplot(aes(x = logFC, y = mlog10FDR)) +
+  geom_point(size = .2) +
+  facet_wrap(disease~contrast, scales = "fixed", nrow = 2) +
+  theme_bw()
+
+ggsave(paste0(dir_out, "/logfc_volcano.pdf"))
+```
+
+
+# General signature plots
+
+## barplots
+
+```{r, fig.height=1.5, fig.width=3}
+dplyr::filter(meta.sig, contrast.label %in% conf$plot_sig_nash_anmod) %>%
+    mutate(contrast.label = factor(contrast.label, levels = rev(conf$plot_sig_nash_anmod))) %>%
+    ggplot(aes(x = contrast.label, y = n.signif, fill = animal.model)) +
+    geom_bar(stat = "identity", color = "gray30") +
+    xlab("") +
+    ylab("Number of significant genes") + 
+    coord_flip() +
+    scale_fill_manual(values = conf$col_nash_mod, name = "Contrast type") +
+    gg_def +
+    theme(panel.grid.major.y = element_blank())
+
+ggsave(paste0(dir_out, "/barplot_signatures_nash_anmod_nsignif.pdf"))
+```
+
+```{r, fig.height=1.5, fig.width=3}
+dplyr::filter(meta.sig, contrast.label %in% conf$plot_sig_nash_trt) %>%
+    mutate(contrast.label = factor(contrast.label, levels = rev(conf$plot_sig_nash_trt))) %>%
+    ggplot(aes(x = contrast.label, y = n.signif, fill = animal.model)) +
+    geom_bar(stat = "identity", color = "gray30") +
+    xlab("") +
+    ylab("Number of significant genes") + 
+    coord_flip() +
+    scale_fill_manual(values = conf$col_nash_mod, name = "Contrast type") +
+    gg_def +
+    theme(panel.grid.major.y = element_blank())
+
+ggsave(paste0(dir_out, "/barplot_signatures_nash_trt_nsignif.pdf"))
+```
+
+# Gene set enrichment
+
+Merge Reactome and KEGG
+
+```{r}
+# merge msig and kegg
+df.pathway2gene <- bind_rows(
+  data.frame(df.reactome, db = "Reactome"), 
+  data.frame(df.kegg, db = "KEGG")
+)
+
+df.pathwaymeta <- add_count(df.pathway2gene, pathway) %>%
+  dplyr::select(pathway, n, db) %>%
+  unique 
+```
+
+
+## Knowledge-driven preselection
+
+
+```{r}
+# topics for selection
+list.TA.regex <- c(
+  "APOPTOSIS", 
+  "IMMUN", 
+  "FATTY.ACID", 
+  "EXTRACELLULAR.MATRIX.ORGANIZATION", 
+  "OXIDATIVE.STRESS",
+  "PPAR"
+)
+
+list.path.regex <- lapply(setNames(list.TA.regex, list.TA.regex), grep, 
+                          unique(df.pathway2gene$pathway), value = TRUE, ignore.case = TRUE)
+
+list.path.regex
+
+```
+Metadata about the matches
+
+```{r}
+lapply(list.path.regex, function(x) subset(df.pathwaymeta, pathway %in% x))
+```
+
+For the publication, fix the long PPARalpha pathway. 
+Due to code dependencies, this is the best place to do it. 
+Now *Regulation of lipid metabolism by peroxisome proliferator activated receptor alpha PPARalpha [Reactome]* becomes *Regulation of lipid metabolism by PPARalpha [Reactome]*
+
+```{r}
+df.pathway2gene <- mutate(
+    df.pathway2gene, 
+    pathway = gsub("peroxisome proliferator activated receptor alpha ", "", pathway)
+)
+
+df.pathwaymeta <- mutate(
+    df.pathwaymeta, 
+    pathway = gsub("peroxisome proliferator activated receptor alpha ", "", pathway)
+)
+```
+
+
+Pathway selection
+
+```{r}
+list.candidates <- c(
+  "Apoptosis [KEGG]", 
+  "Regulation of apoptosis [Reactome]", 
+  "Cytokine signaling in immune system [Reactome]", 
+  "Fatty acid metabolism [Reactome]", 
+  "Fatty acid metabolism [KEGG]", 
+  "Extracellular matrix organization [Reactome]", 
+  "Oxidative stress induced senescence [Reactome]",
+  "Regulation of lipid metabolism by PPARalpha [Reactome]", 
+  "PPAR signaling pathway [KEGG]"
+)
+
+# all of them are exact matches in the gene sets
+intersect(list.candidates, df.pathwaymeta$pathway)
+```
+
+Export table with those. 
+For publication, shorten the PPARalpha pathway name (take out full name, keep acronym)
+
+```{r}
+# for the publication
+df.export <- df.pathway2gene %>%
+  mutate(in.story = pathway %in% list.candidates) %>% 
+  dplyr::rename(gene.id = ensembl_gene_id, path.id = pathway) %>%
+  add_count(path.id) %>%
+  mutate(path.id = paste0(path.id, " (n=", n, ")"))
+  
+
+arrange(df.export, -n) %>% head
+
+write.csv(df.export, file = paste0("../", conf$analysis_nash_genesets), row.names = FALSE)
+```
+
+
+# GSEA from clusterProfiler (with sign)
+
+Double check lengths of fold change lists
+
+
+```{r}
+# lists with log FC 
+list.gsea.up <- list.sig[sig.hsa] %>%
+  lapply(function(x) {
+    sort(setNames(x$logFC, rownames(x)), decreasing = TRUE)
+  }) 
+
+# export fold changes too
+df.fc <- lapply(list.sig[sig.hsa], tibble::rownames_to_column, "gene.id") %>%
+  dplyr::bind_rows()
+dim(df.fc)
+openxlsx::write.xlsx(df.fc, paste0(dir_out, "/df.export.logfc.xlsx"))
+
+
+sapply(list.gsea.up, length)
+```
+Heads and tails of the list elements - sanity check
+
+```{r}
+lapply(list.gsea.up, function(x) c(head(x, 3), tail(x, 3))) 
+```
+
+
+
+Added more permutations and a seed
+
+```{r}
+
+
+# GSEA
+res.gsea.fc.dir <- lapply(list.gsea.up, function(x)
+  clusterProfiler::GSEA(
+    x, 
+    TERM2GENE=df.pathway2gene,
+    minGSSize = 20,
+    maxGSSize = 1200,
+    pvalueCutoff = 1.1, 
+    nPerm = 100000,
+    pAdjustMethod='BH', 
+    seed = TRUE) %>%
+  .@result %>%
+  data.table) %>%
+  bind_rows(.id = 'dataset')
+
+
+# ES and NES should always have the same sign
+stopifnot(all(sign(res.gsea.fc.dir$enrichmentScore) == sign(res.gsea.fc.dir$NES)))
+
+# save gsea results
+openxlsx::write.xlsx(res.gsea.fc.dir, paste0(dir_out, "/df.export.gsea.logfc.dir.xlsx"))
+
+# table
+cat(list.candidates %in% res.gsea.fc.dir[p.adjust < 0.05, ID], sep='\n')
+
+```
+
+### Distribution of NES
+
+```{r, fig.width=12}
+mutate(res.gsea.fc.dir, signif = ifelse(qvalues < .05, "Significant", "Non-significant")) %>%
+  ggplot(aes(x = NES)) +
+  geom_vline(xintercept = 0) +
+  geom_histogram() +
+  facet_grid(signif~dataset) +
+  theme_bw()
+
+ggsave(paste0(dir_out, "/gsea_nes_histograms.pdf"))
+```
+
+### Number of hits
+
+Total number of gene sets
+
+```{r}
+nrow(df.pathwaymeta)
+```
+
+
+```{r}
+res.gsea.fc.dir %>%
+  dplyr::filter(qvalues < .05) %>%
+  add_count(dataset) %>%
+  dplyr::select(dataset, n) %>% 
+  unique
+```
+
+
+### Significant terms
+
+At 5% FDR:
+
+```{r, fig.width=12, fig.height=5}
+# heatmap 
+res.gsea.fc.dir[ID %in% list.candidates] %>%
+         mutate(log.fdr = ifelse(qvalues < 0.05, -log10(qvalues), NA)) %>%
+  ggplot(aes(x=dataset, y=ID, color=log.fdr)) +
+  geom_point() +
+  scale_color_gradient(low = "orange", high = "red") +
+  theme(
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+
+ggsave(paste0(dir_out, "/gsea_significant_hits_FDR005.pdf"))
+```
+
+At 10% FDR:
+
+```{r, fig.width=12, fig.height=5}
+# heatmap 
+ggplot(res.gsea.fc.dir[ID %in% list.candidates] %>%
+         mutate(log.fdr=ifelse(qvalues < 0.1, -log10(qvalues), NA))) +
+  aes(x=dataset, y=ID, color=log.fdr) +
+  geom_point() +
+  scale_color_gradient(low = "orange", high = "red") +
+  theme(
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+```
+
+Heatmap NES
+
+```{r, fig.width=12, fig.height=5}
+# heatmap 
+ggplot(res.gsea.fc.dir[ID %in% list.candidates] %>%
+         mutate(signif = qvalues < 0.1)) +
+  aes(x=dataset, y=ID, fill = NES, colour = signif) +
+  geom_point(pch = 21) +
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "white")) +
+  scale_fill_gradient2(low = conf$col_gsea["low"], mid = conf$col_gsea["mid"], high = conf$col_gsea["high"]) +
+  theme(
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+
+ggsave(paste0(dir_out, "/gsea_nes.pdf"))
+```
+
+
+
+
+## Zip files
+
+Files not zipped for now
+
+```{r}
+# zip.file <- paste0(dir_out, "/export_plots.zip")
+# list.files <- paste0(dir_out, "/", list.files(dir_out, recursive = TRUE))
+# 
+# unlink(zip.file)
+# zip(zipfile = zip.file, files = list.files)
+```
+
+
+# Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

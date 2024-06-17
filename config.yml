@@ -1,0 +1,56 @@
+default:
+    ### raw data ### 
+    # IPF
+    rawdata_ipf_human_expr: "0_rawdata/1_IPF_human/lgrc_data_kfc.txt"
+    rawdata_ipf_human_meta: "0_rawdata/1_IPF_human/lgrc_metadata_kfc.txt"
+    rawdata_ipf_mouse_bleo_aav: "0_rawdata/2_IPF_mouse/list_Bleomycin-AAV.rds"
+    # NASH
+    rawdata_nash_human_expr: "0_rawdata/3_NASH_human/02-DEG-exprTable.RData"
+    rawdata_nash_human_meta: "0_rawdata/3_NASH_human/02-DEG-metadata.RData"
+    rawdata_nash_mouse_cdaa: "0_rawdata/4_NASH_mouse/list_CDAA.rds"
+    rawdata_nash_mouse_ccl4: "0_rawdata/4_NASH_mouse/list_CCl4.rds"
+    rawdata_nash_mouse_bdl: "0_rawdata/4_NASH_mouse/list_BDL.rds"
+    rawdata_nash_mouse_cdaa_elafibranor: "0_rawdata/4_NASH_mouse/list_CDAA-Elafibranor.rds"
+    ### interim data ### 
+    # 0 - id mapping
+    interimdata_genemapping_tab: "1_preprocessing/0_genemapping_output/tab_genes_hsa_map.csv"
+    interimdata_genelabels: "1_preprocessing/0_genemapping_output/vec_ensembl2symbolonly.rds"
+    # 1, 2 IPF
+    interimdata_ipf_human: "1_preprocessing/1_IPF_human_output/sumexp_IPF_kaminski.rds"
+    interimdata_ipf_signatures_lfc: "1_preprocessing/2_IPF_signatures_output/list_IPF_signatures.rds"
+    interimdata_ipf_signatures_lfc_signif: "1_preprocessing/2_IPF_signatures_output/list_IPF_signatures_signif.rds"
+    interimdata_ipf_signatures_meta: "1_preprocessing/2_IPF_signatures_output/tab_IPF_signatures_metadata.csv"
+    # 3, 4 NASH
+    interimdata_nash_human: "1_preprocessing/3_NASH_human_output/sumexp_NASH_hvd.rds"
+    interimdata_nash_signatures_lfc: "1_preprocessing/4_NASH_signatures_output/list_NASH_signatures.rds"
+    interimdata_nash_signatures_lfc_signif: "1_preprocessing/4_NASH_signatures_output/list_NASH_signatures_signif.rds"
+    interimdata_nash_signatures_meta: "1_preprocessing/4_NASH_signatures_output/tab_NASH_signatures_metadata.csv"
+    # 5 - gene sets
+    interimdata_genesets_kegg: "1_preprocessing/5_genesets_output/tab_kegg_hsa_reduced.csv"
+    interimdata_genesets_reactome: "1_preprocessing/5_genesets_output/tab_reactome_hsa_reduced.csv"
+    ## main analysis IPF ##
+    analysis_ipf_signaturelist_anmod: !expr c("AAV-TGFb 03d [Mouse]", "AAV-TGFb 07d [Mouse]", "AAV-TGFb 14d [Mouse]", "AAV-TGFb 21d [Mouse]", "AAV-TGFb 28d [Mouse]", "Bleomycin 03d [Mouse]", "Bleomycin 07d [Mouse]", "Bleomycin 14d [Mouse]", "Bleomycin 21d [Mouse]", "Bleomycin 28d [Mouse]", "IPF disease [Human]")
+    analysis_ipf_signaturelist_trt: !expr c("IPF recovery [Human]")
+    analysis_ipf_pathwayselection: !expr c("Extracellular matrix organization [Reactome]", "Activation of matrix metalloproteinases [Reactome]", "Collagen degradation [Reactome]", "Collagen formation [Reactome]", "VEGF signaling pathway [KEGG]", "Toll like receptor cascades [Reactome]")
+    analysis_ipf_genesets: "2_IPF/1_descriptive_output/df.export.pathways.csv"
+    ## main analysis NASH ##
+    analysis_nash_signaturelist_anmod: !expr c("CDAA 12w [Mouse]", "CCl4 08w [Mouse]", "BDL 10d [Mouse]", "NASH disease F4 [Human]")
+    analysis_nash_signaturelist_trt: !expr c("CCl4 recovery 04w [Mouse]", "CCl4 recovery 08w [Mouse]", "CCl4 recovery 12w [Mouse]", "CDAA+Elafibranor 11w [Mouse]", "NASH F4 recovery to F0 [Human]")
+    analysis_nash_pathwayselection: !expr c("Extracellular matrix organization [Reactome] (n=331)", "Regulation of lipid metabolism by PPARalpha [Reactome] (n=130)", "Cytokine signaling in immune system [Reactome] (n=1044)", "Apoptosis [KEGG] (n=153)")
+    analysis_nash_genesets: "3_NASH/1_descriptive_output/df.export.pathways.csv"
+    ### params ### 
+    # plotting
+    plot_path_ipf: !expr c("Extracellular matrix organization [Reactome] (n=331)", "Activation of matrix metalloproteinases [Reactome] (n=39)", "Collagen degradation [Reactome] (n=75)", "Collagen formation [Reactome] (n=98)", "VEGF signaling pathway [KEGG] (n=61)", "Toll like receptor cascades [Reactome] (n=165)")
+    plot_sig_ipf_anmod: !expr c("IPF disease [Human]", "AAV-TGFb 03d [Mouse]", "AAV-TGFb 07d [Mouse]", "AAV-TGFb 14d [Mouse]", "AAV-TGFb 21d [Mouse]", "AAV-TGFb 28d [Mouse]", "Bleomycin 03d [Mouse]", "Bleomycin 07d [Mouse]", "Bleomycin 14d [Mouse]", "Bleomycin 21d [Mouse]", "Bleomycin 28d [Mouse]")
+    plot_sig_nash_anmod: !expr c("NASH disease F4 [Human]", "CDAA 12w [Mouse]", "CCl4 08w [Mouse]", "BDL 10d [Mouse]")
+    plot_sig_nash_trt: !expr c("NASH F4 recovery to F0 [Human]", "CCl4 recovery 04w [Mouse]", "CCl4 recovery 08w [Mouse]", "CCl4 recovery 12w [Mouse]", "CDAA+Elafibranor 11w [Mouse]")
+    col_ipf: !expr c(Control = "lightblue3", IPF = "lightsalmon2")
+    col_ipf_mod: !expr c(IPF = "#80B1D3", Bleomycin = "#FDB462", "AAV6.2_TGFb1" = "#B3DE69")
+    col_nash_mod: !expr c(NASH = "#8DD3C7", CDAA = "#FFFFB3", CCl4 = "#BEBADA", BDL = "#FB8072")
+    col_gsea: !expr c(low = "turquoise2", mid = "white", high = "indianred1")
+    pheatmap_pal: !expr function(list.colors, n=19){grDevices::colorRampPalette(list.colors)(n)}
+    # differential expression
+    threshold_dge_fdr: 0.05
+    threshold_dge_logfc: 0.25
+    threshold_dge_nsignif: 50
+

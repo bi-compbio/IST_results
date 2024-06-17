@@ -1,0 +1,214 @@
+---
+title: "ID mapping for ensembl/entrez/symbol"
+author: "Sergi Picart"
+date: "08/10/2019"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+## Libraries
+
+```{r, message=FALSE}
+library(plyr)
+library(dplyr)
+library(data.table)
+
+conf <- config::get()
+
+library(biomaRt)
+```
+
+```{r}
+# get directory from config.yml file
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$interimdata_genemapping_tab)
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+ensembl <- biomaRt::useEnsembl(biomart = "ensembl")
+biomaRt::listDatasets(ensembl)
+```
+
+## biomaRt mapping
+
+```{r}
+# for reproducibility
+url.current <- "sep2019.archive.ensembl.org"
+```
+
+### Homo sapiens
+
+```{r}
+ensembl.hsa <- biomaRt::useMart(
+    host = url.current, 
+    biomart = "ensembl", 
+    dataset = "hsapiens_gene_ensembl")
+
+map.hsa <- biomaRt::getBM(
+    attributes = c("entrezgene_id", "ensembl_gene_id", "hgnc_symbol"),
+    values = TRUE,
+    mart = ensembl.hsa) %>%
+  mutate(entrezgene_id = as.character(entrezgene_id), 
+         hgnc_symbol = ifelse(hgnc_symbol == "", NA, hgnc_symbol))
+
+is.na(map.hsa) %>% colSums
+```
+
+### Mus musculus
+
+```{r}
+# ensembl.mmu <- biomaRt::useMart(
+#     host = url.current, 
+#     biomart = "ensembl", 
+#     dataset = "mmusculus_gene_ensembl")
+# 
+# map.mmu <- biomaRt::getBM(
+#     attributes = c("entrezgene_id", "ensembl_gene_id", "mgi_symbol"),
+#     values = TRUE,
+#     mart = ensembl.mmu)  %>%
+#   mutate(entrezgene_id = as.character(entrezgene_id), 
+#          mgi_symbol = ifelse(mgi_symbol == "", NA, mgi_symbol))
+# 
+# is.na(map.mmu) %>% colSums
+```
+
+### Rattus norvegicus
+
+```{r}
+# # Dont know if I should map symbols to uniprot_gn_symbol or to 
+# # rgd_symbol, there are differences. Examples:
+# #  Psma3l vs Psma3, 
+# #  but the mapping coverage 
+# # is similar
+# ensembl.rno <- biomaRt::useMart(
+#     host = url.current, 
+#     biomart = "ensembl", 
+#     dataset = "rnorvegicus_gene_ensembl")
+# 
+# map.rno <- biomaRt::getBM(
+#     attributes = c("entrezgene_id", "ensembl_gene_id", "rgd_symbol"),
+#     values = TRUE,
+#     mart = ensembl.rno)  %>%
+#   mutate(entrezgene_id = as.character(entrezgene_id), 
+#          rgd_symbol = ifelse(rgd_symbol == "", NA, rgd_symbol))
+# 
+# is.na(map.rno) %>% colSums
+```
+
+## Update: gene labels - add ensembl to name mappings
+
+Mapping included in IST
+
+```{r}
+head(IST::vec.ensembl2symbol)
+```
+
+To avoid issues with package versions, below is the code to generate the new, more readable labels
+
+```{r}
+ensembl.hsa.ext <- biomaRt::useMart(
+    host = url.current, 
+    biomart = "ensembl", 
+    dataset = "hsapiens_gene_ensembl")
+
+map.hsa.ext <- biomaRt::getBM(
+    attributes = c("entrezgene_id", "ensembl_gene_id", "external_gene_name"),
+    values = TRUE,
+    mart = ensembl.hsa.ext) %>%
+  mutate(entrezgene_id = as.character(entrezgene_id), 
+         external_gene_name = ifelse(external_gene_name == "", NA, external_gene_name))
+```
+
+
+```{r}
+data.dt.genelabels <- data.table(map.hsa.ext)
+
+# use "-" to identify NAs
+data.dt.genelabels[is.na(data.dt.genelabels)] <- "-"
+
+data.dt.genelabels <- data.dt.genelabels[
+  , by = ensembl_gene_id, 
+  lapply(.SD, function(x) paste(unique(x), collapse = "||")), 
+  .SDcols = c("entrezgene_id", "external_gene_name")]
+
+data.dt.genelabels[
+  , ':='(
+    entrezgene_id = paste0(entrezgene_id, " (", ensembl_gene_id, ")"), 
+    external_gene_name = paste0(external_gene_name, " (", ensembl_gene_id, ")"), 
+    # Update: added a posteriori to have succint labels, only ENSG when necessary
+    external_gene_name_only = ifelse(is.na(external_gene_name), paste0("- (", ensembl_gene_id, ")"), external_gene_name)
+  )
+]
+
+# Update: duplicates appear when using external_gene as a main label
+# for those that have a duplicate, group by gene name, and add the ENSG
+v.external.gene.duplicated <- subset(data.dt.genelabels, duplicated(external_gene_name_only))$external_gene_name_only %>%
+    unique
+
+data.dt.genelabels[
+    external_gene_name_only %in% v.external.gene.duplicated, by = external_gene_name_only, 
+    external_gene_name_only_ensg := paste0(external_gene_name_only, " (", ensembl_gene_id, ")")
+]
+
+# Update: those that are unique, just keep the name. 
+# Remove the column with name only (contains duplicates!)
+data.dt.genelabels[is.na(external_gene_name_only_ensg), external_gene_name_only_ensg := external_gene_name_only] 
+data.dt.genelabels[, external_gene_name_only := NULL]
+```
+
+```{r}
+v.dup <- colSums(apply(data.dt.genelabels, 2, duplicated))
+stopifnot(all(v.dup == 0))
+```
+
+```{r}
+# Update: succint labels
+vec.ensembl2symbolonly <- setNames(
+  data.dt.genelabels$external_gene_name_only_ensg, data.dt.genelabels$ensembl_gene_id)
+head(vec.ensembl2symbolonly)
+```
+
+## Save
+
+```{r}
+# save_internal <- function(object.name, dir = "../../data") {
+#   save(list = object.name, 
+#        file = paste0(dir, "/", object.name, ".RData"), 
+#        compress = "xz")
+# }
+# 
+# sapply(
+#   c("map.hsa", "map.mmu", "map.rno"), 
+#   save_internal, 
+#   dir = dir_out
+# )
+
+write.csv(
+  map.hsa, 
+  file = paste0("../", conf$interimdata_genemapping_tab), 
+  row.names = FALSE
+)
+
+writeLines(
+  paste0("ENSEMBL archive version: ", url.current), 
+  con = paste0(dir_out, "/txt_genes_hsa_metadata.txt")
+)
+
+saveRDS(
+    vec.ensembl2symbolonly, 
+    file = paste0("../", conf$interimdata_genelabels)
+)
+```
+
+## Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```
+

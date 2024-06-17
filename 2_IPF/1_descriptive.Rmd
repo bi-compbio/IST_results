@@ -1,0 +1,372 @@
+---
+title: "Quality control and analysis of IPF human references"
+author: "Kolja becker and Sergio Picart-Armada"
+date: "10 November, 2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  message = FALSE, 
+  error = FALSE, 
+  warning = FALSE, 
+  fig.height = 4)
+
+```
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+
+date()
+
+```
+
+Retrieve datasets:
+
+* Kaminsky: `se.ipf.kaminsky`
+
+
+```{r}
+
+library(data.table)
+library(SummarizedExperiment)
+library(limma)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(ggpmisc)
+library(seqsetvis)
+library(plotly)
+library(pheatmap)
+
+
+stopifnot(packageVersion("IST") >= "0.5.26")
+library(IST)
+
+# new config file
+conf <- config::get()
+
+# some helpers for GSEA/ORA
+source("../00_helpers.R")
+
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$analysis_ipf_genesets)
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+```
+
+# Load, PCA, Limma
+
+```{r}
+se.human <- readRDS(paste0("../", conf$interimdata_ipf_human))
+list.sig <- readRDS(paste0("../", conf$interimdata_ipf_signatures_lfc))
+list.sig.signif <- readRDS(paste0("../", conf$interimdata_ipf_signatures_lfc_signif))
+meta.sig <- read.csv(paste0("../", conf$interimdata_ipf_signatures_meta))
+list.orth <- IST::data.list.orth
+
+df.kegg <- read.csv(paste0("../", conf$interimdata_genesets_kegg))
+df.reactome <- read.csv(paste0("../", conf$interimdata_genesets_reactome))
+
+# thresholds
+th.logfc <- conf$threshold_dge_logfc
+th.fdr <- conf$threshold_dge_fdr
+
+# human signatures
+sig.hsa <- subset(meta.sig, organism.name == "Human")$contrast.label
+sig.hsa.ipf <- subset(meta.sig, organism.name == "Human" & contrast.type == "AnimalModel")$contrast.label
+```
+
+## Kaminsky dataset
+
+```{r}
+
+se.human
+
+```
+
+```{r}
+
+sum.human <- summarise_dataset(
+  se.human,
+  return.interim = TRUE) 
+
+# PCA plot kaminski
+pca.human = sum.human$df.plot %>%
+  arrange(is.medioid) %>%
+  mutate(group = gsub('control', 'Control', group)) %>%
+    ggplot() +
+    # SPA: took out medioid as colour (all values are TRUE)
+    # aes(x = PC1, y = PC2, fill = group, colour = is.medioid) +
+    aes(x = PC1, y = PC2, fill = group) +
+    geom_point(size=1, pch = 21) +
+    scale_colour_manual(values = c("FALSE" = "gray70", "TRUE" = "black")) +
+    scale_fill_manual(values = conf$col_ipf) +
+    # labs(fill = "Group", colour = 'Medioid') +
+    labs(fill = "Group") +
+    gg_def
+
+# save
+ggsave(
+  pca.human,
+  file=paste0(dir_out, '/Fig_IPF_pca_kaminski.pdf'),
+  width=80,
+  height=50,
+  units='mm')
+
+```
+
+```{r}
+
+table(se.human$ist.class)
+
+```
+
+Age effect
+
+```{r}
+
+ggplot(sum.human$df.plot, aes(x = PC1, y = PC2, fill = age.ch1)) +
+  geom_point(pch = 21) +
+  scale_fill_gradient(low = "white", high = "indianred") +
+  theme_bw()
+
+# NOTE Kolja: Do we want this plot in the figures?
+
+```
+
+
+
+# Differential gene expression
+
+```{r, get limma tables}
+
+# get limma tables for human data
+df.DE = lapply(list.sig[sig.hsa.ipf], 
+               function(x) tibble::rownames_to_column(.data = x, 'ensemblID')) %>%
+  bind_rows(.id = 'dataset') %>%
+  mutate(sig = (adj.P.Val < th.fdr & abs(logFC) > th.logfc)) %>%
+  data.table
+
+```
+
+## Violin plots
+
+```{r, plots DE analysis}
+
+# violin plot fold changes
+violin.FC = df.DE %>%
+  ggplot() +
+    aes(x=dataset, y=logFC, fill=dataset) +
+    geom_violin(lwd=0) +
+    gg_def +
+    theme(
+      axis.text.x = element_text(angle=90, vjust=0.5, hjust=1),
+      axis.title.x = element_blank(),
+      legend.position = 'none')
+
+# save
+ggsave(
+  violin.FC,
+  file=paste0(dir_out, '/Fig_IPF_violin_FC.pdf'),
+  height=50,
+  width=30,
+  units='mm'
+)
+
+# barplot DE genes
+# Note Kolja: we could indicate how often each gene appears in the three
+# 
+# now there's only one signature with 4k DEGs approx
+# barplot with a single bar
+# 
+# barplot.DE = df.DE[(sig)] %>%
+#   add_count(ensemblID) %>%
+#   ggplot() +
+#   aes(x=dataset, fill=dataset) +
+#     geom_bar(stat='count') +
+#     gg_def +
+#     theme(
+#       axis.text.x = element_text(angle=90, vjust=0.5, hjust=1),
+#       axis.title.x = element_blank(),
+#       legend.position = 'none')
+# 
+# # save
+# ggsave(
+#   barplot.DE,
+#   file=paste0(dir_out, '/Fig_IPF_barplot_DE.pdf'),
+#   height=50,
+#   width=30,
+#   units='mm'
+# )
+
+```
+
+## barplots
+
+```{r, fig.height=1.5, fig.width=3}
+dplyr::filter(meta.sig, contrast.type == "AnimalModel") %>%
+    mutate(contrast.label = factor(contrast.label, levels = rev(conf$plot_sig_ipf_anmod))) %>%
+    ggplot(aes(x = contrast.label, y = n.signif, fill = animal.model)) +
+    geom_bar(stat = "identity", color = "gray30") +
+    xlab("") +
+    ylab("Number of significant genes") + 
+    coord_flip() +
+    scale_fill_manual(values = conf$col_ipf_mod, name = "Contrast type") +
+    gg_def +
+    theme(panel.grid.major.y = element_blank())
+
+ggsave(paste0(dir_out, "/barplot_signatures_ipf_anmod_nsignif.pdf"))
+```
+
+
+## venn DEGs
+
+```{r, venn diagram DEGs}
+
+# venn diagram DE genes
+# VENN diagram only has one circle now
+# # 
+# venn.DE = seqsetvis::ssvFeatureVenn(
+#   df.DE[sig == TRUE] %>% split(x = .$ensemblID, f = .$dataset),
+#   line_width = 0.5,
+#   counts_txt_size = 1)+
+#   theme(
+#     legend.key.size=unit(0.5,"line"),
+#     legend.position = 'right',
+#     text=element_text(size=6)
+#   )
+# 
+# # save
+# ggsave(
+#   venn.DE,
+#   file=paste0(dir_out, '/Fig_IPF_venn_DE.pdf'),
+#   height=40,
+#   width=65,
+#   units='mm'
+# )
+
+```
+
+```{r, hypergeometric test}
+
+# # DE genes to list
+# groups = unique(df.DE$dataset)
+# list.DE.all = lapply(groups, function(x)
+#   df.DE[(sig)][dataset == x, ensemblID]) %>%
+#   magrittr::set_names(paste0(groups, '_all'))
+# list.DE.up = lapply(groups, function(x)
+#   df.DE[(sig)][logFC > 0][dataset == x, ensemblID]) %>%
+#   magrittr::set_names(paste0(groups, '_up'))
+# list.DE.down = lapply(groups, function(x)
+#   df.DE[(sig)][logFC < 0][dataset == x, ensemblID]) %>%
+#   magrittr::set_names(paste0(groups, '_down'))
+# 
+# # all groups together
+# list.DE = c(list.DE.all, list.DE.up, list.DE.down)
+# 
+# # hypergeometric test
+# bkg = Reduce(intersect, 
+#   list(rownames(data.kaminski), rownames(data.yang), rownames(data.meltzer)))
+# res.hyper = compareSets(list.DE, bkgSet = bkg)
+
+```
+
+# Export main pathways
+
+Combine KEGG and Reactome pathways
+
+```{r}
+# merge msig and kegg
+df.pathway2gene <- bind_rows(
+  data.frame(df.reactome, db = "Reactome"), 
+  data.frame(df.kegg, db = "KEGG")
+)
+
+df.pathwaymeta <- add_count(df.pathway2gene, pathway) %>%
+  dplyr::select(pathway, n, db) %>%
+  unique 
+```
+
+Select known relevant pathways
+
+```{r}
+list.IPF.pathways.main <- c(
+  "Extracellular matrix organization [Reactome]", 
+  "Activation of matrix metalloproteinases [Reactome]", 
+  "Collagen degradation [Reactome]", 
+  "Collagen formation [Reactome]", 
+  "VEGF signaling pathway [KEGG]", 
+  "Toll like receptor cascades [Reactome]"
+)
+
+intersect(list.IPF.pathways.main, df.pathway2gene$pathway)
+```
+
+Other candidate pathways
+
+```{r}
+list.IPF.pathways.suppl <- c(
+  "Organelle biogenesis and maintenance [Reactome]", 
+  "Cilium assembly [Reactome]", 
+  "Tak1 activates nfkb by phosphorylation and activation of ikks complex [Reactome]", 
+  "Defensins [Reactome]", 
+  "Anchoring of the basal body to the plasma membrane [Reactome]", 
+  "Assembly of collagen fibrils and other multimeric structures [Reactome]", 
+  "Ddx58 ifih1 mediated induction of interferon alpha beta [Reactome]", 
+  "Collagen chain trimerization [Reactome]", 
+  "Myd88 cascade initiated on plasma membrane [Reactome]", 
+  "Trif ticam1 mediated tlr4 signaling [Reactome]", 
+  "Toll like receptor 9 tlr9 cascade [Reactome]", 
+  "Toll like receptor tlr1:tlr2 cascade [Reactome]", 
+  "Interleukin 1 signaling [Reactome]", 
+  "Toll like receptor 4 tlr4 cascade [Reactome]", 
+  "Interleukin 1 family signaling [Reactome]", 
+  "NOD-like receptor signaling pathway [KEGG]", 
+  "Degradation of the extracellular matrix [Reactome]", 
+  "Natural killer cell mediated cytotoxicity [KEGG]", 
+  "ECM-receptor interaction [KEGG]", 
+  "VEGF signaling pathway [KEGG]", 
+  "Focal adhesion [KEGG]", 
+  "PI3K-Akt signaling pathway [KEGG]", 
+  "Regulation of apoptosis [Reactome]", 
+  "Apoptosis [KEGG]"
+)
+
+intersect(list.IPF.pathways.suppl, df.pathway2gene$pathway)
+```
+
+Export pathways, tagging the ones in the main body
+
+```{r}
+# for the publication
+df.export <- df.pathway2gene %>%
+  mutate(in.story = pathway %in% list.IPF.pathways.main) %>% 
+  dplyr::rename(gene.id = ensembl_gene_id, path.id = pathway) %>%
+  add_count(path.id) %>%
+  mutate(path.id = paste0(path.id, " (n=", n, ")"))
+  
+
+arrange(df.export, -n) %>% head
+
+write.csv(df.export, file = paste0("../", conf$analysis_ipf_genesets), row.names = FALSE)
+```
+
+
+# Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

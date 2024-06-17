@@ -1,0 +1,816 @@
+---
+title: "Adding null model to IST in IPF"
+author: "Sergi Picart and Kolja Becker"
+date: "01/02/2021"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+date()
+```
+
+Load data and libraries
+
+```{r, message=FALSE, warning=FALSE}
+library(SummarizedExperiment)
+
+library(tidyverse)
+library(magrittr)
+
+library(ggplot2)
+library(ggpmisc)
+library(plotly)
+library(pheatmap)
+
+library(data.table)
+
+stopifnot(packageVersion("IST") >= "0.5.26")
+library(IST)
+
+library(parallel)
+
+dir_out <- "3_IST_disease_output"
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+# new config file
+conf <- config::get()
+
+source("../00_helpers.R")
+
+set.seed(42)
+```
+
+# Load relevant data
+
+We need
+
+* Signature list
+* Signature metadata
+* Orthology mapping
+* Pathways
+
+```{r}
+# remove small (<100DEG) signatures
+list.sig <- readRDS(paste0("../", conf$interimdata_ipf_signatures_lfc))
+list.sig.signif <- readRDS(paste0("../", conf$interimdata_ipf_signatures_lfc_signif))
+meta.sig <- read.csv(paste0("../", conf$interimdata_ipf_signatures_meta), row.names = 1, stringsAsFactors = FALSE)
+
+# signature metadata for shiny app
+meta.sig$sig.class <- ifelse(
+    grepl("F4", meta.sig$sig.id), "positivecontrol", 
+    ifelse(meta.sig$organism.name == "Mouse", "default", "other")
+)
+
+list.orth <- IST::data.list.orth
+df.path <- read.csv(paste0("../", conf$analysis_ipf_genesets), stringsAsFactors = FALSE)
+df.path.bin <- filter(df.path, in.story) %>% select(path.id, gene.id)
+se.human <- readRDS(paste0("../", conf$interimdata_ipf_human))
+
+# labels for gene heatmaps
+vec.ensembl2symbolonly <- readRDS(paste0("../", conf$interimdata_genelabels))
+
+# pathway metadata for shiny app
+df.path.meta <- data.frame(
+    path.id = unique(df.path.bin$path.id), 
+    path.class = "default", 
+    stringsAsFactors = FALSE
+)
+
+sig.anmod <- conf$analysis_ipf_signaturelist_anmod
+sig.trt <- conf$analysis_ipf_signaturelist_trt
+```
+
+Separate animal model and treatment signatures
+
+
+```{r}
+meta.sig.anmod <- meta.sig[sig.anmod, ]
+meta.sig.trt <- meta.sig[sig.trt, ]
+```
+
+
+# Human data
+
+## Data preparation
+
+Define parameters and human data
+
+### List of human references
+
+```{r}
+# se.kaminsky$class <- as.ordered(se.kaminsky$group.caps)
+# 
+# list.se <- list(
+#   Human = se.kaminsky, 
+#   KaminskyMedioids = se.kaminsky[, se.kaminsky$is.medioid]
+# )
+# 
+# list.se
+```
+
+```{r}
+# lapply(list.se, magrittr::extract2, "ist.class") %>% sapply(table)
+```
+
+Differential genes with very lenient FDR (50%)
+
+```{r}
+# list.de <- lapply(
+#   list.se, 
+#   function(se) {
+#     IST::get.de.genes(X = t(assay(se)), y = se$ist.class, logFC = 0, adj.P.Val = .5)
+#   })
+```
+
+Non-DE
+
+```{r}
+# list.de.not <- lapply(
+#   list.se, 
+#   function(se) {
+#     de <- IST::get.de.genes(X = t(assay(se)), y = se$ist.class, logFC = 0, adj.P.Val = .5)
+#     setdiff(rownames(se), de)
+#   })
+```
+
+```{r}
+# lapply(list.de.not, length)
+```
+
+```{r}
+# Gene sets
+# table(df.path.bin$path.id)
+```
+
+
+```{r}
+# Decoys
+# se.main <- list.se$KaminskyMedioids
+# de.not <- list.de.not$Kaminsky
+```
+
+
+## Human ref
+
+### Permuted datasets
+
+```{r}
+# set.seed(1)
+# permute_class <- function(se, seed, ...) {
+#   set.seed(seed)
+#   se$ist.class %<>% sample
+#   se
+# }
+# 
+# n.perm.se <- 10
+# list.se.perm <- lapply(
+#   seq_len(n.perm.se), 
+#   permute_class, 
+#   se = se.main
+# ) %>% 
+#   set_names(paste0("PERM", formatC(seq_len(n.perm.se), width = 2, flag = "0")))
+```
+
+Double check the class was permuted
+
+```{r}
+# sapply(list.se.perm, extract2, "ist.class") %>% as.data.frame
+```
+
+### Surrogated datasets
+
+```{r}
+# set.seed(1)
+# surrogate_class <- function(se, prop = .8, seed, ...) {
+#   set.seed(seed)
+#   
+#   ids <- caret::createDataPartition(se$ist.class, p = prop)[[1]]
+#   se[, ids]
+# }
+# 
+# list.se.surrogate <- lapply(
+#   seq_len(n.perm.se), 
+#   surrogate_class, 
+#   se = se.main, 
+#   prop = .8
+# ) %>% 
+#   set_names(paste0("SUR", formatC(seq_len(n.perm.se), width = 2, flag = "0")))
+```
+
+
+## Gene sets
+
+### Permuted gene sets
+
+Draft genes from the non-DE bucket
+
+```{r}
+# permute_pathway <- function(df, universe, ...) {
+#   genes <- sample(universe, size = nrow(df), replace = FALSE)
+#   
+#   data.frame(path.id = df$path.id[1], gene.id = genes)
+# }
+# 
+# set.seed(1)
+# df.path.perm <- plyr::ddply(
+#   df.path.bin, "path.id", permute_pathway, universe = de.not
+# )
+```
+
+### Surrogated gene sets
+
+Draft genes from the non-DE bucket
+
+```{r}
+# surrogate_pathway <- function(df, prop, ...) {
+#   n.genes <- nrow(df)
+#   
+#   inds.keep <- sample(n.genes, size = prop*n.genes)
+#   df[inds.keep, , drop = FALSE]
+# }
+# 
+# set.seed(1)
+# df.path.surrogate <- plyr::ddply(
+#   df.path.bin, "path.id", surrogate_pathway, prop = .8
+# )
+```
+
+## Signatures
+
+### Permuted signatures
+
+```{r}
+# # permute a single signature
+# permute_signature <- function(df.orig, df.signif, ...) {
+#   n.resample <- nrow(df.signif)
+#   genes.resample <- sample(rownames(df.orig), n.resample)
+#   set_rownames(df.signif, genes.resample)
+# }
+
+# permutes a collection of signatures in a coordinated way
+# (i.e. keeping a consistent mapping all the time)
+# ASSUMES THE SIGNATURES HAVE A COMMON BACKGROUND
+permute_signatures <- function(list.orig, list.signif, ...) {
+  # background
+  gene.universe <- lapply(list.orig, rownames) %>% unlist %>% unique
+  # gene shuffling
+  v.map <- setNames(gene.universe, sample(gene.universe))
+  
+  lapply(list.signif, function(df) {
+    rn <- rownames(df)
+    rn.new <- v.map[rn]
+    rownames(df) <- rn.new
+    
+    df
+  })
+}
+
+list.sig.bystudy <- split(list.sig, meta.sig$study.id)
+list.sig.signif.bystudy <- split(list.sig.signif, meta.sig$study.id)
+
+set.seed(1)
+n.perm.sig <- 1000
+# SPA: lowering number for testing
+# n.perm.sig <- 10
+list.list.sig.perm <- lapply(
+  seq_len(n.perm.sig),
+  function(dummy) {
+    
+    list.perm <- mapply(
+      permute_signatures, 
+      list.orig = list.sig.bystudy, 
+      list.signif = list.sig.signif.bystudy, 
+      SIMPLIFY = FALSE) 
+    
+    reduce(list.perm, c)[names(list.sig)]
+    # unlist(use.names = TRUE, recursive = FALSE)
+    # mapply(
+    #   permute_signature, 
+    #   df.orig = list.sig, 
+    #   df.signif = list.sig.signif, 
+    #   SIMPLIFY = FALSE
+    # )
+  }
+) %>%
+  set_names(paste0("PERM", formatC(seq_len(n.perm.sig), width = 3, flag = "0")))
+
+# SPA: added this
+list.list.sig.perm.anmod <- lapply(list.list.sig.perm, extract, sig.anmod)
+```
+
+
+
+### Surrogated signatures
+
+Must start from original signatures, before subsetting for DE genes!
+
+```{r}
+# # surrogate_pathway will also work here
+# set.seed(1)
+# 
+# list.list.sig.surrogate <- lapply(
+#   seq_len(n.perm.sig),
+#   function(dummy) {
+#     mapply(
+#       surrogate_pathway, 
+#       df = list.sig.signif, 
+#       MoreArgs = list(prop = .8), 
+#       SIMPLIFY = FALSE
+#     )
+#   }
+# ) %>%
+#   set_names(paste0("SUR", formatC(seq_len(n.perm.sig), width = 3, flag = "0")))
+  
+```
+
+Size of a signatures object
+
+```{r}
+# pryr::object_size(list.list.sig.perm)
+```
+
+
+# Fit signatures object
+
+Number of signatures
+
+```{r}
+length(list.sig)
+```
+
+Size of metadata table
+
+```{r}
+dim(meta.sig)
+```
+
+Signatures:
+
+```{r}
+sapply(list.sig.signif, nrow) %>% data.frame(n.significant = .)
+```
+
+## Animal models
+
+```{r}
+ist.sig.anmod <- define(
+  "ist.signatures", 
+  list.sig = list.sig.signif[sig.anmod],
+  tab.meta = meta.sig[sig.anmod, ], 
+  org.to = "hsapiens", 
+  list.mapping = list.orth
+) %>% fit
+```
+
+
+# Fit pathways objects
+
+```{r}
+list.path <- df.path.bin$path.id %>% unique
+```
+
+## Loop over human references
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+# file.istpath <- paste0(dir.main, "/01_permphenos_list.istpath.rds")
+
+# # permuted phenos
+# if (!file.exists(file.istpath)) {
+#   # this takes a while (~20min?)
+#   list.istpath <- lapply(
+#     c(list(Main = se.main), list.se.perm), 
+#     function(se) {
+#       define(
+#           "ist.pathways",
+#           X = t(assay(se)), 
+#           y = se$ist.class, 
+#           org.to = "hsapiens", 
+#           id.bin = rep(TRUE, ncol(se)), 
+#           id.oc = se$ist.class %in% c(1), 
+#           pathways.table.bin = df.path.bin
+#       ) %>% fit 
+#     }
+#   )
+#   
+#   # object weighs 1.7GB - can we save it?
+#   # 800MB in disk - okay
+#   saveRDS(list.istpath, file.istpath)  
+# } else {
+#   list.istpath <- readRDS(file.istpath)
+# }
+
+# original data
+ist.path <- define(
+    "ist.pathways",
+    X = t(assay(se.human)), 
+    y = se.human$ist.class, 
+    org.to = "hsapiens", 
+    id.bin = rep(TRUE, ncol(se.human)), 
+    id.oc = se.human$ist.class %in% c(1), 
+    pathways.table.bin = df.path.bin, 
+    pathways.meta = df.path.meta
+) %>% fit 
+
+# # permuted GS
+# ist.path <- define(
+#     "ist.pathways",
+#     X = t(assay(se.human)), 
+#     y = se.human$ist.class, 
+#     org.to = "hsapiens", 
+#     id.bin = rep(TRUE, ncol(se.human)), 
+#     id.oc = se.human$ist.class %in% c(1), 
+#     pathways.table.bin = df.path.bin
+# ) 
+```
+
+# Signature and pathway selections
+
+Graphical parameters for heatmaps
+
+```{r}
+args.ph <- default.args.pheatmap("pathwaymap")
+args.ph$cluster_cols <- TRUE
+args.ph$cluster_rows <- TRUE
+
+args.ph2 <- args.ph
+args.ph2$cluster_rows <- FALSE
+
+args.ph3 <- args.ph
+args.ph3$cluster_cols <- FALSE
+
+args.ph4 <- args.ph
+args.ph4$cluster_cols <- FALSE
+args.ph4$cluster_rows <- FALSE
+
+# dont plot heatmap (silent)
+args.ph5 <- args.ph4
+args.ph5$silent <- TRUE
+
+args.phnotext <- args.ph
+args.phnotext$fontsize_number <- 0
+
+args.phnotext2 <- args.phnotext
+args.phnotext2$cluster_rows <- FALSE
+
+vars.heatmap <- c("n.signif", "organism.name")
+```
+
+
+# Animal models
+
+## Regular pathway heatmap
+
+```{r}
+ist.res.anmod <- define(
+  "ist.results", 
+  ist.signatures = ist.sig.anmod, 
+  ist.pathways = ist.path, 
+  id.ref = se.human$ist.class == -1, 
+  id.ist = se.human$ist.class == 1,
+  group = se.human$class, 
+  vec.gene2label = vec.ensembl2symbolonly
+) %>% fit
+```
+
+```{r, fig.height=6, fig.width=6}
+mat.pathwaymap <- plot.ist.pathwaymaps(
+  ist.res.anmod, 
+  type = "pheatmap", args.pheatmap = args.ph4, 
+  vars.meta.sig = c("animal.model", "organism.name", "n.signif"))
+```
+
+## Regular genemaps
+
+```{r, fig.width=16, fig.height=6}
+save.genemaps.pdf(
+  ist.res.anmod, 
+  dir.out = paste0(dir_out, "/genemaps-anmod-full"), 
+  # SPA: now signatures and pathways are already pre-selected
+  # id.paths = list.path.main, 
+  # sig.ids = list.sig.main, 
+  args.pheatmap = args.phnotext2, 
+  vars.meta.sig = vars.heatmap, 
+  cex.width = 2, 
+  cex.height = 1.2,
+  main.width = 120, 
+  max.genes = Inf
+)
+```
+
+```{r, fig.width=16, fig.height=6}
+save.genemaps.pdf(
+  ist.res.anmod, 
+  dir.out = paste0(dir_out, "/genemaps-anmod-top50-tall"), 
+  args.pheatmap = args.phnotext2, 
+  vars.meta.sig = vars.heatmap, 
+  cex.width = 2, 
+  cex.height = 1.2,
+  main.width = 120, 
+  max.genes = 50
+)
+```
+
+```{r, fig.width=16, fig.height=6}
+save.genemaps.pdf(
+  ist.res.anmod, 
+  dir.out = paste0(dir_out, "/genemaps-anmod-top50-short"), 
+  args.pheatmap = args.phnotext2, 
+  vars.meta.sig = vars.heatmap, 
+  cex.width = 2, 
+  cex.height = .5,
+  main.width = 120, 
+  max.genes = 50
+)
+```
+
+
+
+## Q3: Recap when random signatures?
+
+
+```{r}
+get_ist_results <- function(se, ist.path, ist.sig, class.ref = "IPF", class.ist = "Control") {
+  define(
+      "ist.results", 
+      ist.signatures = ist.sig, 
+      ist.pathways = ist.path, 
+      group = se$class,
+      id.ref = se$class == class.ref, 
+      id.ist = se$class == class.ist,
+      vec.gene2label = vec.ensembl2symbolonly
+    ) %>% fit
+}
+```
+
+
+```{r}
+get_ist_arrays <- function(se, ist.path, list.sig, meta.sig, 
+                           list.mapping = list.orth, vec.gene2label = vec.ensembl2symbolonly,
+                           class.ref = "IPF", class.ist = "Control", 
+                           vars.heatmap = c("n.signif", "organism.name"), args.pheatmap = args.ph5) {
+  # get ist signatures object
+  ist.sig <- IST::fit(IST::define(
+      "ist.signatures", 
+      list.sig = list.sig,
+      tab.meta = meta.sig, 
+      org.to = "hsapiens", 
+      list.mapping = list.mapping
+    )
+  )
+  
+  # get ist results object
+  ist.res <- IST::fit(IST::define(
+      "ist.results", 
+      ist.signatures = ist.sig, 
+      ist.pathways = ist.path, 
+      group = se$class,
+      id.ref = se$class == class.ref, 
+      id.ist = se$class == class.ist,
+      vec.gene2label = vec.gene2label
+    ) 
+  )
+  
+  # export main heatmap
+  ist.plt <- IST::plot.ist.pathwaymaps(
+    ist.res, 
+    type = "pheatmap", 
+    args.pheatmap = args.pheatmap, 
+    vars.meta.sig = vars.heatmap 
+  )
+   
+  ist.plt$plot.data$data.wide
+}
+```
+
+
+```{r, results='hide', message=FALSE, fig.keep="last"}
+list.perm <- parallel::mcmapply(
+  get_ist_arrays, 
+  list.sig = list.list.sig.perm, 
+  MoreArgs = list(
+    meta.sig = meta.sig, 
+    ist.path = ist.path, 
+    se = se.human,
+    class.ref = "IPF", 
+    class.ist = "Control"
+  ), 
+  mc.cores = 32,
+  SIMPLIFY = FALSE
+) 
+
+df.orig <- mat.pathwaymap$plot.data$data.long
+mat.orig <- mat.pathwaymap$plot.data$data.wide
+list.perm.sigs <- mat.orig %>% rownames
+
+# fills with 0s missing rows
+# takes order from full.rownames
+fill_mat_missing_rows <- function(mat, full.rownames) {
+  rownames.missing <- setdiff(full.rownames, rownames(mat))
+  n.missing <- length(rownames.missing)
+  
+  # new matrix
+  matdiff <- matrix(nrow = n.missing, ncol = ncol(mat), data = 0)
+  rownames(matdiff) <- rownames.missing
+  colnames(matdiff) <- colnames(mat)
+  
+  # to ensure order is consistent
+  rbind(mat, matdiff)[full.rownames, , drop = FALSE]
+}
+
+array.perm <- plyr::laply(list.perm, fill_mat_missing_rows, full.rownames = list.perm.sigs)
+dimnames(array.perm)[[1]] <- names(list.perm)
+```
+
+```{r}
+# empirical p-value
+# p = (r+1)/(n+1)
+mat.p <- sweep(array.perm, c(2, 3), mat.orig, ">") %>%
+  apply(c(2, 3), function(row) (sum(row) + 1)/(length(row) + 1))
+mat.orig.signif <- mat.orig
+mat.orig.signif[mat.p > .05] <- NA
+  
+df.perm.distrib <- plyr::adply(array.perm, c(2, 3), data.frame) %>%
+  rename(sig.id = X1, pathway = X2, null.delta = piece)
+
+```
+
+P-values
+
+```{r}
+signif(mat.p, 2) %>% as.data.frame
+```
+Melt p-values table
+
+```{r}
+df.perm.p <- as.data.frame(mat.p) %>%
+  rownames_to_column("sig.id") %>%
+  tidyr::pivot_longer(-sig.id, values_to = "p.value", names_to = "pathway")
+```
+
+```{r}
+df.perm.plot <- left_join(df.orig, df.perm.p) %>%
+  mutate(signif = p.value < .05, signif.range = as.ordered(cut(p.value, c(0, .05, .2, 1))))
+  # mutate(signif = p.value < .05)
+  # mutate(significance = ifelse(p.value < .05, "p<0.05", "p>=.05"))
+```
+
+
+P-values, added on top of original recap
+
+```{r, fig.height=6, fig.width=6}
+plt.p <- do.call(
+  pheatmap, 
+  c(list(mat = mat.orig.signif, 
+         color = heatmaps.pal(), 
+         breaks = sym.breaks(mat.orig)
+         ), args.ph4)
+)
+
+ggsave(paste0(dir_out, "/IST_IPF_extendedpathways_withpvalue.png"), plot = plt.p)
+```
+
+Plot recap with significance (GSEA-like style)
+
+Main pathways
+
+```{r, fig.width=3, fig.height=3.5}
+# SPA: pathways already subsetted
+# subset(df.perm.plot, pathway %in% list.path.main & sig.id %in% list.sig.main) %>%
+df.perm.plot %>%
+  mutate(pathway = factor(pathway, conf$plot_path_ipf), 
+         sig.id = factor(sig.id, levels = rev(conf$plot_sig_ipf_anmod))) %>%
+  ggplot(aes(y=sig.id, x=pathway, fill = total.delta.percent, 
+           label = format(total.delta.percent, digits=0), color=signif.range)) +
+  geom_tile(width=0.9, height=0.9, size=0.15) +
+  ggplot2::geom_text(size = 1.1, color='black') +
+  scale_colour_manual(values = c("black", "gray80", "white"), name = "Significance") +
+  scale_fill_gradient2(low = "deepskyblue3", mid = "white", high = "darkorange1", name = "Recapitulation [%]") +
+  gg_def +
+      # fix aspect ratio
+  coord_fixed() +
+  # fix legend
+  guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_colorbar(order = 1)) +
+  theme(panel.grid = element_blank(),
+    axis.line=element_blank(),
+    panel.border=element_blank(),
+    axis.ticks=element_blank(),
+    text = element_text(size = 5, family = "Helvetica"),
+    legend.key.size = unit(0.7,"line"),
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+
+ggsave(file = paste0(dir_out, '/main_ipf_heatmap.pdf'), width=70, height=90, units='mm')
+```
+
+Extended pathways 
+
+```{r, fig.width=5, fig.height=4}
+# SPA: taken out extra plots - now df.path.bin only contains the main pathways
+# 
+# ggplot(df.perm.plot,
+#        aes(y=sig.id, x=pathway, fill = total.delta.percent, 
+#            label = format(total.delta.percent, digits=0), color=signif.range)) +
+#   geom_tile(width=0.9, height=0.9, size=0.15) +
+#   ggplot2::geom_text(size = 1.1, color='black') +
+#   scale_colour_manual(values = c("black", "gray80", "white")) +
+#   scale_fill_gradient2(low = "deepskyblue3", mid = "white", high = "darkorange1") +
+#   config$gg.def +
+#     # fix aspect ratio
+  # coord_fixed() +
+  # # fix legend
+  # guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+  #        fill = guide_colorbar(order = 1)) +
+#   theme(panel.grid = element_blank(),
+#     axis.line=element_blank(),
+#     panel.border=element_blank(),
+#     axis.ticks=element_blank(),
+#     text = element_text(size = 5, family = "Helvetica"),
+#     legend.key.size = unit(0.7,"line"),
+#     axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+#     axis.title=element_blank())
+# 
+# ggsave(file = paste0(dir.main, '/extended_ipf_heatmap.pdf'))
+```
+
+
+Plot distribution histograms
+
+```{r, fig.width=12, fig.height=12}
+list.path.plot <- conf$plot_path_ipf
+
+ggplot() +
+  geom_vline(xintercept = 0, colour = "gray50") +
+  geom_vline(aes(xintercept = total.delta.percent, colour = signif.range), 
+             lwd = .5, lty = 5, 
+             data = subset(df.perm.plot, pathway %in% list.path.plot)) +
+  geom_histogram(aes(x = null.delta), 
+                 data = subset(df.perm.distrib, pathway %in% list.path.plot)) +
+  facet_grid(sig.id~pathway, scales = "free") +
+  scale_color_manual(values = c("indianred1", "darkgoldenrod2", "gray70")) +
+  xlab("Recapitulation (null distribution, and observed statistic in dashed line)") +
+  ylab("Counts (null distribution)") +
+  theme_bw() +
+  theme(strip.text.y = element_text(angle = 0), 
+        strip.text.x = element_text(angle = 90))
+
+ggsave(file = paste0(dir_out, '/main_ipf_histograms.pdf'))
+```
+
+```{r, fig.width=22, fig.height=14}
+# SPA: taken out
+# list.path.plot2 <- list.path.full
+# 
+# ggplot() +
+#   geom_vline(xintercept = 0, colour = "gray50") +
+#   geom_vline(aes(xintercept = total.delta.percent, colour = signif.range), 
+#              lwd = .5, lty = 5, 
+#              data = subset(df.perm.plot, pathway %in% list.path.plot2)) +
+#   geom_histogram(aes(x = null.delta), 
+#                  data = subset(df.perm.distrib, pathway %in% list.path.plot2)) +
+#   facet_grid(sig.id~pathway, scales = "free") +
+#   scale_color_manual(values = c("indianred1", "darkgoldenrod2", "gray70")) +
+#   xlab("Recapitulation (null distribution, and observed statistic in dashed line)") +
+#   ylab("Counts (null distribution)") +
+#   theme_bw() +
+#   theme(strip.text.y = element_text(angle = 0), 
+#         strip.text.x = element_text(angle = 90))
+# 
+# ggsave(file = paste0(dir.main, '/extended_ipf_histograms.pdf'))
+```
+
+
+
+
+## Export
+
+Export data objects
+
+```{r}
+saveRDS(ist.res.anmod, paste0(dir_out, "/ist_res_anmod.rds"))
+save(mat.orig, mat.p, array.perm, df.orig, df.perm.distrib, 
+     df.perm.plot, file = paste0(dir_out, "/null_models.RData"))
+```
+
+
+
+
+
+# Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,180 @@
+---
+title: "Save MSigDB and KEGG versions for consistent analyses"
+author: "Sergio Picart-Armada"
+date: "18 November, 2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, 
+                      error = FALSE, warning = FALSE, 
+                      fig.height = 4)
+```
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+date()
+```
+## Introduction
+
+The aim of this report is to save the following gene set collections and store their metadata:
+
+* MSigDB
+* KEGG
+
+```{r}
+library(KEGGREST)
+library(msigdbr)
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(stringr)
+
+source("../00_helpers.R")
+
+conf <- config::get()
+# get directory from config.yml file
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$interimdata_genesets_kegg)
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+file.map.hsa <- paste0("../", conf$interimdata_genemapping_tab)
+```
+
+
+# Msigdb - human
+
+
+```{r}
+map.hsa <- read.csv(file.map.hsa)
+
+# load and merge annotation
+df.msigdb.hsa <- msigdbr::msigdbr(species = "Homo sapiens") 
+
+df.msigdb.hsa.symbol <- df.msigdb.hsa %>%
+  merge(map.hsa, by.x='entrez_gene', by.y='entrezgene_id', all.x=T) %>%
+  data.table
+
+# fix names
+df.msigdb.hsa.symbol.reactome <- subset(df.msigdb.hsa.symbol, gs_subcat == "CP:REACTOME") %>%
+    transmute(
+        pathway = gsub("REACTOME ", "", gsub("_", " ", gs_name)), 
+        # fix case (some genes will not work, but fix them later)
+        pathway = str_to_sentence(pathway), 
+        ensembl_gene_id = ensembl_gene_id, 
+        hgnc_symbol = hgnc_symbol, 
+        entrez_gene = entrez_gene
+    ) %>% mutate(
+        # fix main pathway names
+        pathway = paste0(pathway, " [Reactome]"),
+        pathway = gsub("[Vv]egf", "VEGF", pathway), 
+        pathway = gsub("[Pp]paralpha ", "PPARalpha ", pathway)
+    )
+
+# write reactome pathways only
+data.table::fwrite(
+    df.msigdb.hsa.symbol.reactome, 
+    paste0(dir_out, "/tab_reactome_hsa_complete.csv"))
+
+
+# Reduced table, only ENSG
+df.msigdb.hsa.symbol.reactome.reduced <- dplyr::select(
+    df.msigdb.hsa.symbol.reactome, pathway, ensembl_gene_id
+) %>% 
+    na.omit %>% 
+    unique %>% 
+    arrange(pathway, ensembl_gene_id)
+
+data.table::fwrite(
+    df.msigdb.hsa.symbol.reactome.reduced, 
+    paste0("../", conf$interimdata_genesets_reactome))
+
+# write metadata
+v.metadata <- paste0("msigdbr version: ", packageVersion("msigdbr"))
+writeLines(v.metadata, paste0(dir_out, "/txt_reactome_hsa_metadata.txt"))
+```
+
+
+Dimensions (reduced table):
+
+```{r}
+dim(df.msigdb.hsa.symbol.reactome.reduced)
+```
+Looks (reduced table)
+
+```{r}
+head(df.msigdb.hsa.symbol.reactome.reduced)
+```
+
+# KEGG - Human
+
+```{r}
+
+# get pathway table (don't use biohelpeR version)
+list.kegg.hsa <- .GlobalEnv$get_kegg_pathway_table(org = "hsa", entity = "hsa")
+
+# merge gene annotation
+df.kegg.hsa = list.kegg.hsa$data %>%
+  merge(map.hsa, by.x='entity', by.y='entrezgene_id', all.x=T) %>%
+  data.table
+
+# fix names
+df.kegg.hsa.symbol <- df.kegg.hsa %>%
+    transmute(
+        pathway = paste0(path.name, " [KEGG]"), 
+        ensembl_gene_id = ensembl_gene_id, 
+        hgnc_symbol = hgnc_symbol, 
+        entrez_gene = entity
+    )
+
+# write kegg pathways
+data.table::fwrite(
+    df.kegg.hsa.symbol, 
+    paste0(dir_out, "/tab_kegg_hsa_complete.csv"))
+
+
+# Reduced table, only ENSG
+df.kegg.hsa.symbol.reduced <- dplyr::select(
+    df.kegg.hsa.symbol, pathway, ensembl_gene_id
+) %>% 
+    na.omit %>% 
+    unique %>% 
+    arrange(pathway, ensembl_gene_id)
+
+data.table::fwrite(
+    df.kegg.hsa.symbol.reduced, 
+    paste0("../", conf$interimdata_genesets_kegg))
+
+# write metadata
+writeLines(list.kegg.hsa$meta, paste0(dir_out, "/txt_kegg_hsa_metadata.txt"))
+
+```
+
+Dimensions (reduced table)
+
+```{r}
+dim(df.kegg.hsa.symbol.reduced)
+```
+
+Looks (reduced table)
+
+```{r}
+head(df.kegg.hsa.symbol.reduced)
+```
+
+# Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

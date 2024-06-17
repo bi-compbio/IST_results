@@ -1,0 +1,246 @@
+---
+title: "Export IPF signatures for manuscript"
+author: "Sergi Picart"
+date: "19/11/2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+date()
+```
+
+Load data and libraries
+
+```{r, message=FALSE, warning=FALSE}
+library(SummarizedExperiment)
+
+library(tidyverse)
+library(magrittr)
+
+library(ggplot2)
+library(ggpmisc)
+library(plotly)
+library(pheatmap)
+
+conf <- config::get()
+# get directory from config.yml file
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$interimdata_ipf_signatures_lfc)
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+file.ipfhumanref <- paste0("../", conf$interimdata_ipf_human)
+
+ref.q <- conf$threshold_dge_fdr
+ref.logfc <- conf$threshold_dge_logfc
+# remove small (<50DEG) signatures
+min.dge <- conf$threshold_dge_nsignif
+
+
+set.seed(42)
+```
+
+
+
+# AAV6 and bleo mouse signatures 
+
+## locate file
+
+```{r}
+
+file.dge <- paste0("../", conf$rawdata_ipf_mouse_bleo_aav)
+
+env.bleo_aav <- new.env()
+env.bleo_aav$raw <- readRDS(file.dge)
+
+```
+
+## Reading new file
+
+```{r}
+names(env.bleo_aav$raw$dge) %<>% gsub("\\.vs\\.", "-", .) 
+env.bleo_aav$n.signif <- sapply(
+  env.bleo_aav$raw$dge,
+  function(df) dplyr::filter(df, abs(log2FoldChange) > ref.logfc & adj.P.Val < ref.q) %>% nrow()
+)
+env.bleo_aav$n.signif
+```
+
+```{r}
+env.bleo_aav$sig.meta <- data.frame(
+  contrast.name = c(
+    "Lung_AAV6_2_TGFb1_d3-Lung_AV6_2_Stuffer_d3", 
+    "Lung_AAV6_2_TGFb1_d7-Lung_AV6_2_Stuffer_d7", 
+    "Lung_AAV6_2_TGFb1_d14-Lung_AV6_2_Stuffer_d14", 
+    "Lung_AAV6_2_TGFb1_d21-Lung_AV6_2_Stuffer_d21", 
+    "Lung_AAV6_2_TGFb1_d28-Lung_AV6_2_Stuffer_d28", # am
+    "Lung_Bleomycin_d3-Lung_Control_NaCl_d3", 
+    "Lung_Bleomycin_d7-Lung_Control_NaCl_d7", 
+    "Lung_Bleomycin_d14-Lung_Control_NaCl_d14", 
+    "Lung_Bleomycin_d21-Lung_Control_NaCl_d21", 
+    "Lung_Bleomycin_d28-Lung_Control_NaCl_d28" # am
+  ),
+  contrast.label = c(
+    "AAV-TGFb 03d [Mouse]",
+    "AAV-TGFb 07d [Mouse]", 
+    "AAV-TGFb 14d [Mouse]",
+    "AAV-TGFb 21d [Mouse]", 
+    "AAV-TGFb 28d [Mouse]", 
+    "Bleomycin 03d [Mouse]",
+    "Bleomycin 07d [Mouse]",
+    "Bleomycin 14d [Mouse]", 
+    "Bleomycin 21d [Mouse]", 
+    "Bleomycin 28d [Mouse]"
+  ),
+  contrast.type = "AnimalModel",
+  treatment = "None",
+  organism.name = "Mouse",
+  animal.model = rep(c("AAV6.2_TGFb1", "Bleomycin"), each = 5),
+  model.timepoint = c(
+    "03d", "07d", "14d", "21d", "28d",
+    "03d", "07d", "14d", "21d", "28d"
+  ),
+  model.meta = "Young",
+  tissue = "Lung",
+  disease = "IPF",
+  study.id = "Bleomycin_AAV",
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+env.bleo_aav$sig.list <- env.bleo_aav$raw$dge[env.bleo_aav$sig.meta$contrast.name] %>%
+  lapply(function(cnt) {
+    cnt[c("log2FoldChange", "adj.P.Val")] %>%
+      dplyr::rename(logFC = log2FoldChange)
+  })
+names(env.bleo_aav$sig.list) <- env.bleo_aav$sig.meta$contrast.label
+```
+
+
+# Human signature 
+
+## Differential analysis
+
+```{r}
+# compute differential genes
+se.kaminski.med <- readRDS(file.ipfhumanref)
+
+# as originally computed
+de.kaminski.med <- IST::get.de.genes(
+  X = t(assay(se.kaminski.med)), 
+  y = as.ordered(se.kaminski.med$group.caps), 
+  return.toptable = TRUE, 
+  robust = TRUE)
+```
+
+Dimensions
+
+```{r}
+dim(de.kaminski.med$topTable)
+```
+DE genes (medioids only)
+
+```{r}
+length(de.kaminski.med$de.genes)
+```
+
+
+## Export
+
+List of signatures
+
+```{r}
+env.human <- new.env()
+
+local({
+  # metadata
+  # list of signatures
+  sig.list <- list(
+    "IPF disease [Human]" = de.kaminski.med, 
+    "IPF recovery [Human]" = de.kaminski.med
+  ) %>% lapply(extract2, "topTable") %>%
+    lapply(magrittr::extract, c("logFC", "adj.P.Val"))
+  
+  # flip the gold standard treatment/recovery
+  sig.list[["IPF recovery [Human]"]] %<>%
+      mutate(logFC = -logFC)
+  
+  # their metadata
+  sig.meta <- data.frame(
+    contrast.name = names(sig.list),
+    contrast.label = names(sig.list),
+    contrast.type = c("AnimalModel", "Treatment"),
+    treatment = "None",
+    organism.name = "Human",
+    animal.model = "IPF",
+    model.timepoint = "",
+    model.meta = "Reference",
+    tissue = "Lung",
+    disease = "IPF",
+    study.id = c("Kaminski_GSE47460"),
+    stringsAsFactors = FALSE
+  )
+}, env.human)
+
+```
+
+# Export
+
+Merge and count number of significant genes
+
+```{r}
+# whole lists
+list.sig <- c(env.bleo_aav$sig.list, env.human$sig.list)
+meta.sig <- dplyr::bind_rows(env.bleo_aav$sig.meta, env.human$sig.meta)
+
+# ensure default colnames match those expected by IST
+v.org <- c(Human = "hsapiens", Mouse = "mmusculus", Rat = "rnorvegicus")
+meta.sig <- mutate(meta.sig, 
+                   sig.id = contrast.label, 
+                   sig.name = contrast.label, 
+                   sig.org = v.org[organism.name])
+rownames(meta.sig) <- meta.sig$contrast.label
+
+# names match exactly by order
+stopifnot(all(names(list.sig) == meta.sig$contrast.label))
+
+# only keep significant genes
+list.sig.signif <- lapply(list.sig, subset, abs(logFC) > ref.logfc & adj.P.Val < ref.q)
+v.sig <- sapply(list.sig.signif, nrow)
+meta.sig$n.signif <- v.sig
+v.sig
+
+# don't keep any signature with too few genes
+stopifnot(!any(v.sig < min.dge))
+```
+
+Export the whole list, not only significant genes (GSEA, etc)
+
+```{r}
+# # takes about 5x space vs the rds file
+# plyr::ldply(list.sig, rownames_to_column, var = "ensg", .id = "Signature") %>%
+#     write.csv(paste0(dir_out, "/tab_IPF_signatures.csv"), row.names = FALSE)
+
+saveRDS(list.sig, paste0("../", conf$interimdata_ipf_signatures_lfc), compress = "xz")
+saveRDS(list.sig.signif, paste0("../", conf$interimdata_ipf_signatures_lfc_signif), compress = "xz")
+write.csv(meta.sig, paste0("../", conf$interimdata_ipf_signatures_meta), row.names = TRUE)
+```
+
+
+## Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

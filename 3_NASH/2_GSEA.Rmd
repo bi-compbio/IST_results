@@ -1,0 +1,621 @@
+---
+title: "GSEA of disease models in the NASH IST case study"
+author: "Sergio Picart-Armada"
+date: "24th February, 2021"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, 
+                      error = FALSE, warning = FALSE, 
+                      fig.height = 4)
+```
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+date()
+```
+
+Load data and libraries
+
+```{r}
+library(SummarizedExperiment)
+
+library(data.table)
+library(tidyverse)
+library(magrittr)
+
+library(ggplot2)
+library(ggpmisc)
+library(plotly)
+library(pheatmap)
+
+library(openxlsx)
+library(clusterProfiler)
+
+stopifnot(packageVersion("IST") >= "0.5.26")
+library(IST)
+
+source("../00_helpers.R")
+
+# new config file
+conf <- config::get()
+
+dir_out <- "2_GSEA_output"
+if (!dir.exists(dir_out)) dir.create(dir_out)
+```
+
+# Load relevant data
+
+We need
+
+* Signature list
+* Signature metadata
+* Orthology mapping
+* Pathways
+
+```{r}
+# remove small (<100DEG) signatures
+list.sig <- readRDS(paste0("../", conf$interimdata_nash_signatures_lfc))
+list.sig.signif <- readRDS(paste0("../", conf$interimdata_nash_signatures_lfc_signif))
+meta.sig <- read.csv(paste0("../", conf$interimdata_nash_signatures_meta), row.names = 1, stringsAsFactors = FALSE)
+
+list.orth <- IST::data.list.orth
+df.path <- read.csv(paste0("../", conf$analysis_nash_genesets), stringsAsFactors = FALSE)
+df.path.bin <- filter(df.path, in.story) %>% select(path.id, gene.id)
+se.human <- readRDS(paste0("../", conf$interimdata_nash_human))
+
+sig.anmod <- conf$analysis_nash_signaturelist_anmod
+sig.trt <- conf$analysis_nash_signaturelist_trt
+```
+
+# Map murine signatures to human genes
+
+## Run IST
+
+Idea: run IST, but only for the mapping.
+Focus on animal model for now (no trt).
+Use the whole signature (not just the significant genes).
+
+```{r}
+# fit IST pathways
+ist.path <- define(
+    "ist.pathways",
+    X = t(assay(se.human)), 
+    y = se.human$ist.class, 
+    org.to = "hsapiens", 
+    id.bin = se.human$fibrosis_stage %in% c(0, 4),
+    id.oc = se.human$ist.class %in% c(1), 
+    pathways.table.bin = df.path.bin
+) %>% fit 
+```
+
+## Signatures with all genes
+
+```{r}
+# fit IST signatures & results to map them
+ist.sig.all <- define(
+  "ist.signatures", 
+  list.sig = list.sig,#[sig.anmod],
+  tab.meta = meta.sig,#[sig.anmod, ], 
+  org.to = "hsapiens", 
+  list.mapping = list.orth
+) %>% fit
+```
+
+
+```{r}
+# results object
+ist.res.all <- define(
+  "ist.results", 
+  ist.signatures = ist.sig.all, 
+  ist.pathways = ist.path, 
+  id.ref = se.human$ist.class == -1, 
+  id.ist = se.human$ist.class == 1,
+  group = se.human$class, 
+  vec.gene2label = IST::vec.ensembl2symbol
+) %>% fit
+```
+
+Export signatures
+
+```{r}
+df.fcs.all <- getTabSignatures(ist.res.all)
+
+dim(df.fcs.all)
+
+df.anmod.fcs.all <- subset(df.fcs.all, sig.id %in% sig.anmod)
+df.trt.fcs.all <- subset(df.fcs.all, sig.id %in% sig.trt)
+```
+
+```{r}
+write.csv(df.anmod.fcs.all, file = paste0(dir_out, "/tab.fcs.anmod.csv"), row.names = FALSE)
+write.csv(df.trt.fcs.all, file = paste0(dir_out, "/tab.fcs.trt.csv"), row.names = FALSE)
+```
+
+## Signatures with significant genes only
+
+```{r}
+# fit IST signatures & results to map them
+ist.sig.signif <- define(
+  "ist.signatures", 
+  list.sig = list.sig.signif,#[sig.anmod],
+  tab.meta = meta.sig,#[sig.anmod, ], 
+  org.to = "hsapiens", 
+  list.mapping = list.orth
+) %>% fit
+```
+
+
+```{r}
+# results object
+ist.res.signif <- define(
+  "ist.results", 
+  ist.signatures = ist.sig.signif, 
+  ist.pathways = ist.path, 
+  id.ref = se.human$ist.class == -1, 
+  id.ist = se.human$ist.class == 1,
+  group = se.human$class, 
+  vec.gene2label = IST::vec.ensembl2symbol
+) %>% fit
+```
+
+Export signatures
+
+```{r}
+df.fcs.signif <- getTabSignatures(ist.res.signif)
+
+dim(df.fcs.signif)
+
+df.anmod.fcs.signif <- subset(df.fcs.signif, sig.id %in% sig.anmod)
+df.trt.fcs.signif <- subset(df.fcs.signif, sig.id %in% sig.trt)
+```
+
+```{r}
+write.csv(df.anmod.fcs.signif, file = paste0(dir_out, "/tab.fcs.anmod.signif.csv"), row.names = FALSE)
+write.csv(df.trt.fcs.signif, file = paste0(dir_out, "/tab.fcs.trt.signif.csv"), row.names = FALSE)
+```
+
+# Signature coverage
+
+How many orthologs do animal model signatures have? See printed summary from IST.
+
+```{r}
+sig.animals <- filter(meta.sig, treatment == "None" & organism.name == "Mouse")$contrast.label
+# fit IST signatures & results to map them
+ist.sig.animal.stats <- define(
+  "ist.signatures", 
+  list.sig = list.sig[sig.animals],
+  tab.meta = meta.sig[sig.animals, ], 
+  org.to = "hsapiens", 
+  list.mapping = list.orth
+) %>% fit
+
+ist.sig.animal.stats
+```
+
+How many genes from the human reference have mouse orthologs? Total of genes
+
+```{r}
+n.human <- nrow(se.human)
+n.human
+```
+
+Genes with an ortholog
+
+```{r}
+n.humanorth <- sum(rownames(se.human) %in% list.orth$mmusculus$ortholog)
+n.humanorth
+```
+
+Percentage
+
+```{r}
+round(100*n.humanorth/n.human)
+```
+
+# Plotting fold changes
+
+## Animal models
+
+Single fold change table with significance
+
+```{r}
+# find rows that are in all but not in signif (i.e. non-signif) 
+# and add the signif rows
+df.anmod.fcs.merged <- anti_join(
+    df.anmod.fcs.all, 
+    df.anmod.fcs.signif, 
+    by = c("sig.id", "ortholog")
+) %>%
+    mutate(Significance = "Not significant") %>%
+    bind_rows(mutate(df.anmod.fcs.signif, Significance = "Significant"))
+
+```
+
+
+```{r}
+v.anmod.genes <- c(
+    "ACTA2" = "ENSG00000107796",
+    "TIMP1" = "ENSG00000102265", 
+    "BMP1" = "ENSG00000168487",
+    "PPARA" = "ENSG00000186951",
+    "RXRA" = "ENSG00000186350",
+    "RXRB" = "ENSG00000204231",
+    "NR1H3" = "ENSG00000025434",
+    "MMP2" = "ENSG00000087245", 
+    "ADAM8" = "ENSG00000151651", 
+    "FASLG" = "ENSG00000117560", 
+    "CASP3" = "ENSG00000164305", 
+    "BCL2" = "ENSG00000171791", 
+    "BAX" = "ENSG00000087088"
+)
+df.anmod.genes <- data.frame(
+    ortholog = v.anmod.genes,
+    symbol = names(v.anmod.genes)
+)
+
+# to plot individual genes
+df.anmod.genes.sig <- inner_join(df.anmod.fcs.merged, df.anmod.genes) %>%
+    mutate(logFC_round = signif(logFC, 2)) 
+
+# to plot genes with pathway labels
+df.anmod.genes.sig.path <- dplyr::filter(df.path.bin, path.id %in% conf$analysis_nash_pathwayselection) %>%
+    right_join(df.anmod.genes.sig, by = c("gene.id" = "ortholog")) %>%
+    dplyr::filter(!is.na(path.id))
+
+
+df.anmod.genes.sig %>%
+    filter(Significance == "Significant") %>%
+    select(-ortholog, -Significance, -logFC) %>%
+    pivot_wider(names_from = symbol, values_from = logFC_round)
+```
+
+
+```{r, fig.width=6, fig.height=2}
+ggplot(df.anmod.genes.sig, aes(x = sig.id, y = logFC, fill = Significance)) +
+    geom_bar(stat = "identity") +
+    facet_wrap(~symbol, nrow = 2) +
+    scale_fill_manual(values = c("gray80", "gray20")) +
+    coord_flip() +
+    gg_def +
+    xlab("") +
+    theme(legend.position = "bottom")
+```
+
+
+```{r, fig.width=4, fig.height=2.5}
+ggplot(df.anmod.genes.sig, aes(x = symbol, y = sig.id, color = Significance)) +
+    geom_tile(aes(fill = logFC), lwd = .3, width = .85, height = .85) +
+    geom_text(aes(label = logFC_round), size = 1.7) +
+    scale_colour_manual(values = c("gray75", "gray20")) +
+    scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
+    # coord_flip() +
+    coord_fixed() +
+    gg_def +
+    xlab("") +
+    ylab("") +
+    guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_colorbar(order = 1)) +
+    theme(
+        axis.text.x = ggplot2::element_text(angle = 90, vjust = .5, hjust = 1),
+        legend.position = "right", 
+        panel.grid = element_blank(), 
+        axis.line=element_blank(),
+        panel.border=element_blank(),
+        axis.ticks=element_blank())
+
+ggsave(paste0(dir_out, "/Figure_NASH_logFC_combined_anmod_mainpathways.pdf"))
+```
+
+```{r, fig.width=4, fig.height=3}
+ggplot(df.anmod.genes.sig.path, aes(x = symbol, y = sig.id, color = Significance)) +
+    geom_tile(aes(fill = logFC), width = .9, height = .9, lwd = .5) +
+    geom_text(aes(label = logFC_round), size = 1.7) +
+    scale_colour_manual(values = c("gray75", "gray20")) +
+    scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
+    # coord_flip() +
+    facet_wrap(~path.id, scales = "free_x", nrow = 2, labeller = label_wrap_gen(width=35)) +
+    gg_def +
+    xlab("") +
+    ylab("") +
+    guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_colorbar(order = 1)) +
+    theme(aspect.ratio = 1,
+        axis.text.x = ggplot2::element_text(angle = 45, vjust = 1, hjust = 1),
+        legend.position = "right", 
+        panel.grid = element_blank(), 
+        axis.line=element_blank(),
+        panel.border=element_blank(),
+        axis.ticks=element_blank())
+
+
+ggsave(paste0(dir_out, "/Figure_NASH_logFC_bypathway_anmod_mainpathways.pdf"))
+```
+
+## Treatments
+
+Single fold change table with significance
+
+```{r}
+# find rows that are in all but not in signif (i.e. non-signif) 
+# and add the signif rows
+df.trt.fcs.merged <- anti_join(
+    df.trt.fcs.all, 
+    df.trt.fcs.signif, 
+    by = c("sig.id", "ortholog")
+) %>%
+    mutate(Significance = "Not significant") %>%
+    bind_rows(mutate(df.trt.fcs.signif, Significance = "Significant"))
+
+```
+
+
+```{r}
+v.trt.genes <- c(
+    "TIMP1" = "ENSG00000102265", 
+    "MMP2" = "ENSG00000087245", 
+    "ADAM8" = "ENSG00000151651", 
+    "COL6A1" = "ENSG00000142156",
+    
+    "PPARA" = "ENSG00000186951",
+    "RXRA" = "ENSG00000186350",
+    "RXRB" = "ENSG00000204231",
+    "NR1H3" = "ENSG00000025434",
+    
+    
+    "GLIPR1" = "ENSG00000139278", 
+    "FHL2" = "ENSG00000115641"
+)
+df.trt.genes <- data.frame(
+    ortholog = v.trt.genes,
+    symbol = names(v.trt.genes)
+)
+
+# to plot individual genes
+df.trt.genes.sig <- inner_join(df.trt.fcs.merged, df.trt.genes) %>%
+    mutate(logFC_round = signif(logFC, 2)) 
+
+# to plot genes with pathway labels
+df.trt.genes.sig.path <- dplyr::filter(df.path.bin, path.id %in% conf$analysis_nash_pathwayselection) %>%
+    right_join(df.trt.genes.sig, by = c("gene.id" = "ortholog")) %>%
+    dplyr::filter(!is.na(path.id))
+
+
+df.trt.genes.sig %>%
+    filter(Significance == "Significant") %>%
+    select(-ortholog, -Significance, -logFC) %>%
+    pivot_wider(names_from = symbol, values_from = logFC_round)
+```
+
+
+```{r, fig.width=6, fig.height=2}
+ggplot(df.trt.genes.sig, aes(x = sig.id, y = logFC, fill = Significance)) +
+    geom_bar(stat = "identity") +
+    facet_wrap(~symbol, nrow = 2) +
+    scale_fill_manual(values = c("gray80", "gray20")) +
+    coord_flip() +
+    gg_def +
+    xlab("") +
+    theme(legend.position = "bottom")
+```
+
+
+```{r, fig.width=4, fig.height=2}
+ggplot(df.trt.genes.sig, aes(x = symbol, y = sig.id, color = Significance)) +
+    geom_tile(aes(fill = logFC), lwd = .3, width = .85, height = .85) +
+    geom_text(aes(label = logFC_round), size = 1.7) +
+    scale_colour_manual(values = c("gray75", "gray20")) +
+    scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
+    # coord_flip() +
+    coord_fixed() +
+    gg_def +
+    xlab("") +
+    ylab("") +
+    guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_colorbar(order = 1)) +
+    theme(
+        axis.text.x = ggplot2::element_text(angle = 90, vjust = .5, hjust = 1),
+        legend.position = "right", 
+        panel.grid = element_blank(), 
+        axis.line=element_blank(),
+        panel.border=element_blank(),
+        axis.ticks=element_blank())
+
+ggsave(paste0(dir_out, "/Figure_NASH_logFC_combined_trt_mainpathways.pdf"))
+```
+
+```{r, fig.width=4, fig.height=3}
+ggplot(df.trt.genes.sig.path, aes(x = symbol, y = sig.id, color = Significance)) +
+    geom_tile(aes(fill = logFC), width = .9, height = .9, lwd = .5) +
+    geom_text(aes(label = logFC_round), size = 1.7) +
+    scale_colour_manual(values = c("gray75", "gray20")) +
+    scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
+    # coord_flip() +
+    facet_wrap(~path.id, scales = "free_x", nrow = 2, labeller = label_wrap_gen(width=35)) +
+    gg_def +
+    xlab("") +
+    ylab("") +
+    guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_colorbar(order = 1)) +
+    theme(aspect.ratio = 1,
+        axis.text.x = ggplot2::element_text(angle = 45, vjust = 1, hjust = 1),
+        legend.position = "right", 
+        panel.grid = element_blank(), 
+        axis.line=element_blank(),
+        panel.border=element_blank(),
+        axis.ticks=element_blank())
+
+
+ggsave(paste0(dir_out, "/Figure_NASH_logFC_bypathway_trt_mainpathways.pdf"))
+```
+
+# Gene set enrichment
+
+## GSEA from clusterProfiler (with sign)
+
+
+```{r, GSEA on signed fold-changes}
+
+# GSEA
+res.gsea.anmod = lapply(sig.anmod, function(x) {
+  # set up list of sorted logFCs
+  df.anmod.fcs.all[sig.id == x, logFC] %>%
+  magrittr::set_names(df.anmod.fcs.all[sig.id == x, ortholog]) %>%
+  sort(decreasing = T) %>%
+  # GSEA
+  clusterProfiler::GSEA(
+    TERM2GENE=df.path.bin,
+    minGSSize = 15,
+    pvalueCutoff = 1.1, 
+    maxGSSize = Inf,
+    nPerm = 100000,
+    pAdjustMethod='BH', 
+    seed = TRUE) %>%
+  # extract result
+  .@result #%>%
+  #dplyr::select(-core_enrichment)
+}) 
+
+# convert to data frame
+res.gsea.anmod.tab <- res.gsea.anmod %>%
+  magrittr::set_names(sig.anmod) %>%
+  bind_rows(.id='sig.id') 
+
+# add gene symbols to core enrichment
+res.gsea.anmod.tab$core_enrichment_symbol <- strsplit(res.gsea.anmod.tab$core_enrichment, "/") %>%
+  lapply(function(x) na.omit(IST::vec.ensembl2symbol[x])) %>%
+  lapply(gsub, pattern = "([^ ]+)( \\(ENSG\\d+\\))", replacement = "\\1") %>%
+  sapply(paste, collapse = "/")
+
+# add more columns
+res.gsea.anmod.tab %<>%
+  mutate(signiffdr = qvalues < 0.1, 
+         signif = pvalue < 0.05) %>%
+  # merge(df.signatures, by.x='dataset', by.y='sig.id', all.x=T)
+  data.table
+
+
+# 02 export GSEA output
+# fwrite(res.gsea.fc.dir, file = './04_IPF_GSEA_result.txt')
+# own subdir?
+fwrite(res.gsea.anmod.tab, file = paste0(dir_out, '/df_GSEA_anmod.csv'))
+
+```
+
+Plot with candidate pathways
+
+```{r, fig.width=3, fig.height=3}
+# GSEA heatmap
+plot.gsea = mutate(res.gsea.anmod.tab, 
+       sig.label = factor(sig.id, levels = (sig.anmod)),
+       ID = factor(ID)) %>%
+  ggplot(aes(y=sig.label, x=ID, fill = NES, label = format(NES, digits=2), color=signif)) +
+  geom_tile(width=0.9, height=0.9, size=0.15) +
+  ggplot2::geom_text(size = 1.1, color='black') +
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "white")) +
+  scale_fill_gradient2(low = conf$col_gsea["low"], mid = conf$col_gsea["mid"], high = conf$col_gsea["high"]) +
+  gg_def +
+    # fix aspect ratio
+    coord_fixed() +
+  # fix legend
+  guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_legend(order = 1)) +
+  labs(color = "Significant") +
+  theme(
+      # play with adding margins so that legend fits in plot
+      legend.margin = margin(t = 0, r = 0, b = -.25, l = 0, unit = "cm"),
+      plot.margin = margin(t = 1, r = .2, b = .2, l = .2, unit = "cm"),
+    panel.grid = element_blank(), 
+    axis.line=element_blank(),
+    panel.border=element_blank(),
+    axis.ticks=element_blank(),
+    text = element_text(size = 5, family = "Helvetica"),
+    legend.key.size = unit(0.7,"line"),
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+
+ggsave(plot.gsea,
+       file=paste0(dir_out, '/Figure_NASH_GSEA_anmod_heatmap_extended.pdf'),
+       width=80, height=70, units='mm')
+```
+
+
+Plot with pathway selection
+
+```{r, fig.width=3, fig.height=3}
+# GSEA heatmap
+
+plot.gsea.cand = subset(res.gsea.anmod.tab, ID %in% conf$analysis_nash_pathwayselection) %>%
+  mutate(sig.label = factor(sig.id, levels = (sig.anmod)),
+         ID = factor(ID, levels = conf$analysis_nash_pathwayselection)) %>%
+  ggplot(aes(y=sig.label, x=ID, fill = NES, label = format(NES, digits=2), color=signif)) +
+  geom_tile(width=0.9, height=0.9, size=0.15) +
+  ggplot2::geom_text(size = 1.1, color='black') +
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "white")) +
+  scale_fill_gradient2(low = conf$col_gsea["low"], mid = conf$col_gsea["mid"], high = conf$col_gsea["high"]) +
+  gg_def +
+    # fix aspect ratio
+    coord_fixed() +
+  # fix legend
+  guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_legend(order = 1)) +
+  labs(color = "Significant") +
+  theme(
+      # play with adding margins so that legend fits in plot
+      legend.margin = margin(t = 0, r = 0, b = -.25, l = 0, unit = "cm"),
+      plot.margin = margin(t = 1, r = .2, b = .2, l = .2, unit = "cm"),
+    panel.grid = element_blank(), 
+    axis.line=element_blank(),
+    panel.border=element_blank(),
+    axis.ticks=element_blank(),
+    text = element_text(size = 5, family = "Helvetica"),
+    legend.key.size = unit(0.7,"line"),
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+
+ggsave(plot.gsea.cand,
+       file=paste0(dir_out, '/Figure_NASH_GSEA_anmod_heatmap.pdf'),
+       width=60, height=75, units='mm')
+```
+
+## Core enrichment genes
+
+Comparison of core enrichment for ECM
+
+```{r}
+list.core.ecm <- subset(res.gsea.anmod.tab, grepl("Extracellular", ID, ignore.case = TRUE))$core_enrichment_symbol %>% 
+  strsplit("/") %>%
+  set_names(subset(res.gsea.anmod.tab, grepl("Extracellular", ID, ignore.case = TRUE))$sig.id)
+```
+
+Look for genes in our story?
+
+```{r}
+v.genes.ecm <- c("TIMP1", "COL1A1", "COL3A1", "BMP1", "TGFB1", "TGFB2", "TGFB3", "FN1")
+tab.core.ecm <- sapply(list.core.ecm, function(x) v.genes.ecm %in% x) %>% set_rownames(v.genes.ecm)
+tab.core.ecm
+```
+
+```{r}
+write.csv(tab.core.ecm, file = paste0(dir_out, "/df_GSEA_coreenrich_ecm.csv"))
+```
+
+
+# Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,612 @@
+---
+title: "GSEA for IPF data"
+author: "Kolja becker and Sergio Picart-Armada"
+date: "10 November, 2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  message = FALSE, 
+  error = FALSE, 
+  warning = FALSE, 
+  fig.height = 4)
+
+```
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+
+date()
+
+```
+Retrieve datasets:
+
+* Kaminsky: `se.ipf.kaminsky`
+
+```{r}
+
+library(data.table)
+library(SummarizedExperiment)
+library(limma)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(ggpmisc)
+library(seqsetvis)
+library(plotly)
+library(pheatmap)
+
+# colorramp2
+library(circlize)
+# gpar
+library(grid)
+
+stopifnot(packageVersion("IST") >= "0.5.26")
+library(IST)
+
+# new config file
+conf <- config::get()
+
+# some helpers for GSEA/ORA
+source("../00_helpers.R")
+
+dir_out <- "2_GSEA_output"
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+```
+
+Script for GSEA on disease model and human data
+
+# Load relevant data
+
+We need
+
+* Signature list
+* Signature metadata
+* Orthology mapping
+* Pathways
+
+```{r}
+# remove small (<100DEG) signatures
+list.sig <- readRDS(paste0("../", conf$interimdata_ipf_signatures_lfc))
+list.sig.signif <- readRDS(paste0("../", conf$interimdata_ipf_signatures_lfc_signif))
+meta.sig <- read.csv(paste0("../", conf$interimdata_ipf_signatures_meta), row.names = 1, stringsAsFactors = FALSE)
+
+list.orth <- IST::data.list.orth
+df.path <- read.csv(paste0("../", conf$analysis_ipf_genesets), stringsAsFactors = FALSE)
+df.path.bin <- filter(df.path, in.story) %>% select(path.id, gene.id)
+se.human <- readRDS(paste0("../", conf$interimdata_ipf_human))
+
+sig.anmod <- conf$analysis_ipf_signaturelist_anmod
+sig.trt <- conf$analysis_ipf_signaturelist_trt
+```
+
+# Map murine signatures to human genes
+
+## Run IST
+
+Idea: run IST, but only for the mapping.
+Focus on animal model for now (no trt).
+Use the whole signature (not just the significant genes).
+
+```{r}
+# fit IST signatures & results to map them
+ist.sig <- define(
+  "ist.signatures", 
+  list.sig = list.sig[sig.anmod],
+  tab.meta = meta.sig[sig.anmod, ], 
+  org.to = "hsapiens", 
+  list.mapping = list.orth
+) %>% fit
+```
+
+```{r}
+# fit IST pathways
+ist.path <- define(
+    "ist.pathways",
+    X = t(assay(se.human)), 
+    y = se.human$ist.class, 
+    org.to = "hsapiens", 
+    id.bin = se.human$group %in% c("control", "IPF"),
+    id.oc = se.human$ist.class %in% c(1), 
+    pathways.table.bin = df.path.bin
+) %>% fit 
+```
+
+```{r}
+# results object
+ist.res <- define(
+  "ist.results", 
+  ist.signatures = ist.sig, 
+  ist.pathways = ist.path, 
+  id.ref = se.human$ist.class == -1, 
+  id.ist = se.human$ist.class == 1,
+  group = se.human$class, 
+  vec.gene2label = IST::vec.ensembl2symbol
+) %>% fit
+```
+Significant-only signature (just for plotting fold changes)
+
+```{r}
+# fit IST signatures & results to map them
+ist.sig.signif <- define(
+  "ist.signatures", 
+  list.sig = list.sig.signif[sig.anmod],
+  tab.meta = meta.sig[sig.anmod, ], 
+  org.to = "hsapiens", 
+  list.mapping = list.orth
+) %>% fit
+```
+
+```{r}
+# results object
+ist.res.signif <- define(
+  "ist.results", 
+  ist.signatures = ist.sig.signif, 
+  ist.pathways = ist.path, 
+  id.ref = se.human$ist.class == -1, 
+  id.ist = se.human$ist.class == 1,
+  group = se.human$class, 
+  vec.gene2label = IST::vec.ensembl2symbol
+) %>% fit
+```
+
+## Signatures export
+
+```{r}
+df.fcs <- getTabSignatures(ist.res)
+df.fcs.signif <- getTabSignatures(ist.res.signif)
+
+dim(df.fcs)
+
+df.anmod.fcs <- subset(df.fcs, sig.id %in% sig.anmod)
+df.anmod.fcs.signif <- subset(df.fcs.signif, sig.id %in% sig.anmod)
+# df.trt.fcs <- subset(df.fcs, sig.id %in% sig.trt)
+```
+
+```{r}
+write.csv(df.anmod.fcs, file = paste0(dir_out, "/tab.fcs.anmod.csv"), row.names = FALSE)
+# write.csv(df.trt.fcs, file = paste0(dir.main, "/tab.fcs.trt.csv"), row.names = FALSE)
+```
+
+# get fold-changes
+
+```{r, fold-changes from table}
+
+# SPA: df.fc had which signatures? All: human, and mouse mapped to human
+# df.signatures had 3 columns: sig.id, sig.label (now both coincide) and the 
+# logical column main (in main story?)
+df.fc <- df.anmod.fcs
+df.signatures <- tibble(
+    sig.id = sig.anmod, 
+    sig.label = sig.anmod, 
+    main = sig.id %in% conf$analysis_ipf_signaturelist_anmod
+)
+```
+
+# Signature coverage
+
+How many orthologs do animal model signatures have? See printed summary from IST.
+
+```{r}
+sig.animals <- filter(meta.sig, treatment == "None" & organism.name == "Mouse")$contrast.label
+# fit IST signatures & results to map them
+ist.sig.animal.stats <- define(
+  "ist.signatures", 
+  list.sig = list.sig[sig.animals],
+  tab.meta = meta.sig[sig.animals, ], 
+  org.to = "hsapiens", 
+  list.mapping = list.orth
+) %>% fit
+
+ist.sig.animal.stats
+```
+
+How many genes from the human reference have mouse orthologs? Total of genes
+
+```{r}
+n.human <- nrow(se.human)
+n.human
+```
+
+Genes with an ortholog
+
+```{r}
+n.humanorth <- sum(rownames(se.human) %in% list.orth$mmusculus$ortholog)
+n.humanorth
+```
+
+Percentage
+
+```{r}
+round(100*n.humanorth/n.human)
+```
+
+
+# Plotting fold changes
+
+
+## Animal models
+
+Single fold change table with significance
+
+```{r}
+# find rows that are in all but not in signif (i.e. non-signif) 
+# and add the signif rows
+df.anmod.fcs.merged <- anti_join(
+    df.anmod.fcs, 
+    df.anmod.fcs.signif, 
+    by = c("sig.id", "ortholog")
+) %>%
+    mutate(Significance = "Not significant") %>%
+    bind_rows(mutate(df.anmod.fcs.signif, Significance = "Significant"))
+
+```
+
+
+```{r}
+# as mentioned in the manuscript
+v.anmod.genes <- c(
+    "TIMP1" = "ENSG00000102265", 
+    "MMP8" = "ENSG00000118113",
+    "MMP14" = "ENSG00000157227",
+    "MMP15" = "ENSG00000102996",
+    "MAPK13" = "ENSG00000156711",
+    "CTSK" = "ENSG00000143387",
+    "VEGFA" = "ENSG00000112715",
+    "TGFB1" = "ENSG00000105329",
+    "PLA2G4C" = "ENSG00000105499",
+    "PRKCA" = "ENSG00000154229"
+)
+df.anmod.genes <- data.frame(
+    ortholog = v.anmod.genes,
+    symbol = names(v.anmod.genes)
+)
+
+# to plot individual genes
+df.anmod.genes.sig <- inner_join(df.anmod.fcs.merged, df.anmod.genes) %>%
+    mutate(logFC_round = signif(logFC, 2)) 
+
+# to plot genes with pathway labels
+df.anmod.genes.sig.path <- dplyr::filter(df.path.bin, path.id %in% conf$plot_path_ipf) %>%
+    right_join(df.anmod.genes.sig, by = c("gene.id" = "ortholog")) %>%
+    dplyr::filter(!is.na(path.id))
+
+
+df.anmod.genes.sig %>%
+    filter(Significance == "Significant") %>%
+    select(-ortholog, -Significance, -logFC) %>%
+    pivot_wider(names_from = symbol, values_from = logFC_round)
+```
+
+
+```{r, fig.width=6, fig.height=2}
+ggplot(df.anmod.genes.sig, aes(x = sig.id, y = logFC, fill = Significance)) +
+    geom_bar(stat = "identity") +
+    facet_wrap(~symbol, nrow = 2) +
+    scale_fill_manual(values = c("gray80", "gray20")) +
+    coord_flip() +
+    gg_def +
+    xlab("") +
+    theme(legend.position = "bottom")
+```
+
+
+```{r, fig.width=4, fig.height=2.5}
+ggplot(df.anmod.genes.sig, aes(x = symbol, y = sig.id, color = Significance)) +
+    geom_tile(aes(fill = logFC), lwd = .3, width = .85, height = .85) +
+    geom_text(aes(label = logFC_round), size = 1.5) +
+    scale_colour_manual(values = c("gray75", "gray20")) +
+    scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
+    # coord_flip() +
+    coord_fixed() +
+    gg_def +
+    xlab("") +
+    ylab("") +
+    guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_colorbar(order = 1)) +
+    theme(
+        axis.text.x = ggplot2::element_text(angle = 90, vjust = .5, hjust = 1),
+        legend.position = "right", 
+        panel.grid = element_blank(), 
+        axis.line=element_blank(),
+        panel.border=element_blank(),
+        axis.ticks=element_blank())
+
+ggsave(paste0(dir_out, "/Figure_IPF_logFC_combined_anmod_mainpathways.pdf"))
+```
+
+```{r, fig.width=4, fig.height=3}
+ggplot(df.anmod.genes.sig.path, aes(x = symbol, y = sig.id, color = Significance)) +
+    geom_tile(aes(fill = logFC), width = .9, height = .9, lwd = .5) +
+    geom_text(aes(label = logFC_round), size = 1.7) +
+    scale_colour_manual(values = c("gray75", "gray20")) +
+    scale_fill_gradient2(low = scales::muted("blue"), high = scales::muted("red")) +
+    # coord_flip() +
+    facet_wrap(~path.id, scales = "free_x", nrow = 2, labeller = label_wrap_gen(width=35)) +
+    gg_def +
+    xlab("") +
+    ylab("") +
+    guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_colorbar(order = 1)) +
+    theme(aspect.ratio = 1,
+        axis.text.x = ggplot2::element_text(angle = 90, vjust = .5, hjust = 1),
+        legend.position = "right", 
+        panel.grid = element_blank(), 
+        axis.line=element_blank(),
+        panel.border=element_blank(),
+        axis.ticks=element_blank())
+
+
+ggsave(paste0(dir_out, "/Figure_IPF_logFC_bypathway_anmod_mainpathways.pdf"))
+```
+
+
+# get pathway info
+
+```{r}
+# SPA: Old pathway table -> had all the pathways
+# # merge msig and kegg
+# df.term2gene = bind_rows(
+#   df.msig,
+#   df.kegg)
+
+# SPA: new pathway table (should be essentially the same, 
+# only minor differences in pathway names)
+df.term2gene <- data.table(df.path)
+```
+
+# enrichment
+
+```{r, GSEA on signed fold-changes}
+
+# GSEA
+res.gsea.fc.dir = lapply(sig.anmod, function(x)
+  # set up list of sorted logFCs
+  df.fc[sig.id == x, logFC] %>%
+  magrittr::set_names(df.fc[sig.id == x, ortholog]) %>%
+  sort(decreasing = T) %>%
+  # GSEA
+  clusterProfiler::GSEA(
+    TERM2GENE=df.term2gene,
+    minGSSize = 15,
+    pvalueCutoff = 1.1,
+    nPerm = 100000,
+    pAdjustMethod='BH',
+    seed = TRUE) %>%
+  # extract result
+  .@result %>%
+  dplyr::select(-core_enrichment)) %>%
+  magrittr::set_names(sig.anmod) %>%
+  bind_rows(.id='dataset') %>%
+  mutate(signif = qvalues < 0.1) %>%
+  merge(df.signatures, by.x='dataset', by.y='sig.id', all.x=T) %>%
+  data.table
+
+# 02 export GSEA output
+# fwrite(res.gsea.fc.dir, file = './04_IPF_GSEA_result.txt')
+# own subdir?
+fwrite(res.gsea.fc.dir, file = paste0(dir_out, '/df_GSEA_result.txt'))
+
+```
+
+# heatmaps
+
+```{r, GSEA heatmap}
+
+# get selected pathways
+# df.pathways = fread('./00_geneset_files/tab.IPF.pathways.csv')
+# SPA: changed to new exported object (contents should be essentially the same
+# except for some pathway naming differences)
+# original file had 1 row per pathway, and the following columns
+# pw.id,main,db,pw.name,pw.label
+df.pathways <- transmute(
+    df.path, 
+    pw.id = path.id, 
+    main = in.story, 
+    db = db, 
+    pw.name = path.id,
+    pw.label = path.id) %>% unique %>% data.table
+
+# subset for plotting
+df.gsea.plot.main = res.gsea.fc.dir %>%
+    # SPA: added filtering to keep only main pathways
+    filter(ID %in% conf$plot_path_ipf) %>%
+  merge(df.signatures, by.x='dataset', by.y='sig.id', all.x=T) %>%
+  merge(df.pathways, by.x='ID', by.y='pw.id') %>%
+  dplyr::filter(main.x & main.y) %>%
+    # SPA: order of labels
+    # now governed via the config file - @KB change if needed!
+    # I tried to keep the same one as in our main figures
+    # mutate(sig.label = factor(sig.label, levels = rev(df.signatures[(main)]$sig.label))) %>%
+  mutate(sig.label = factor(sig.label.x, levels = rev(conf$plot_sig_ipf_anmod))) %>%
+    # for pathways it does not work off the shelf, since we add the 
+    # number of genes afterwards
+    # mutate(pw.label = factor(pw.label, levels = df.pathways[(main)]$pw.label))
+  mutate(pw.label = factor(ID, levels = conf$plot_path_ipf))
+
+# GSEA heatmap
+plot.gsea = ggplot(df.gsea.plot.main) +
+  aes(y=sig.label, x=pw.label, fill = NES, label = format(NES, digits=2), color=signif) +
+  geom_tile(width=0.9, height=0.9, size=0.15) +
+  ggplot2::geom_text(size = 1.1, color='black') +
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "white")) +
+  scale_fill_gradient2(low = conf$col_gsea["low"], mid = conf$col_gsea["mid"], high = conf$col_gsea["high"]) +
+  gg_def +
+    # fix aspect ratio
+    coord_fixed() +
+    # fix legend
+  guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_legend(order = 1)) +
+  labs(color = "Significant") +
+  theme(
+    panel.grid = element_blank(), 
+    axis.line=element_blank(),
+    panel.border=element_blank(),
+    axis.ticks=element_blank(),
+    text = element_text(size = 5, family = "Helvetica"),
+    legend.key.size = unit(0.7,"line"),
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+ggsave(plot.gsea,
+       file=paste0(dir_out, '/Figure_IPF_GSEA_heatmap.pdf'),
+       width=70, height=90, units='mm')
+
+```
+
+```{r, propose new pathways}
+
+# primary signatures 
+# SPA: now only main human dataset 
+# "IPF disease [Human]"
+sig.primary = tail(sig.anmod, 1)
+
+# subset with stringent threshold, add score
+df.results.sub = res.gsea.fc.dir %>%
+  dplyr::filter(dataset %in% sig.primary) %>%
+  dplyr::filter(qvalues < 0.01) %>%
+  dplyr::select(dataset, ID) %>%
+  dplyr::add_count(ID) %>%
+  data.table
+
+# define proposed pathways
+# SPA: used to be 3 datasets, now only 1 (main)
+# pw.new = df.results.sub[n == 3]$ID %>% unique
+pw.new = df.results.sub[n == 1]$ID %>% unique
+
+# 03: list of new candidate pathways
+writeLines(pw.new, paste0(dir_out, "/list_pathways_newcandidates.txt"))
+
+```
+
+```{r, GSEA heatmap extended pathways}
+
+# subset for plotting
+df.gsea.plot.extended = res.gsea.fc.dir %>%
+    # SPA: added line since plot had all the pathways
+    filter(ID %in% pw.new) %>%
+  merge(df.signatures, by.x='dataset', by.y='sig.id', all.x=T) %>%
+  merge(df.pathways, by.x='ID', by.y='pw.id') %>%
+  # SPA: factors, same change as the other GSEA plot
+  mutate(sig.label = factor(sig.label.x, levels = rev(conf$plot_sig_ipf_anmod))) %>%
+  mutate(pw.label = factor(ID))
+
+
+
+# GSEA heatmap
+plot.gsea.extended = ggplot(df.gsea.plot.extended) +
+  aes(y=sig.label, x=pw.label, fill = NES, label = format(NES, digits=2), color=signif) +
+  geom_tile(width=0.9, height=0.9, size=0.15) +
+  ggplot2::geom_text(size = 1.1, color='black') +
+  scale_colour_manual(values = c("TRUE" = "black", "FALSE" = "white")) +
+  scale_fill_gradient2(low = conf$col_gsea["low"], mid = conf$col_gsea["mid"], high = conf$col_gsea["high"]) +
+  gg_def +
+    # fix aspect ratio
+    coord_fixed() +
+  # fix legend
+  guides(color = guide_legend(order = 2, override.aes = list(fill = "white")), 
+         fill = guide_legend(order = 1)) +
+  labs(color = "Significant") +
+  theme(
+    panel.grid = element_blank(), 
+    axis.line=element_blank(),
+    panel.border=element_blank(),
+    axis.ticks=element_blank(),
+    text = element_text(size = 5, family = "Helvetica"),
+    legend.key.size = unit(0.7,"line"),
+    axis.text.x=element_text(angle=90, hjust=1, vjust=0.5),
+    axis.title=element_blank())
+
+ggsave(plot.gsea.extended,
+       file=paste0(dir_out, '/Figure_IPF_GSEA_heatmap_extended.pdf'),
+       width=220, height=100, units='mm')
+
+```
+
+```{r, comparison of pathways}
+
+# get list of pre-selected pathways
+pw.candidates = union(pw.new, conf$plot_path_ipf)
+
+# to list
+list.pw = lapply(pw.candidates, function(x)
+  df.term2gene[path.id == x, gene.id]) %>%
+    setNames(pw.candidates)
+
+# hypergeometric test
+# SPA update - KB's function copied from utils.R to 00_helpers.R
+tmp = compareSets.new(list.pw, bkgSet = Reduce(union, list.pw))
+
+mm = -log10(tmp$matrix$pVal)
+mm[is.infinite(mm)] = 0
+pheatmap(
+  mm,
+  fontsize = 7)
+
+seqsetvis::ssvFeatureVenn(
+  list.pw[c("Collagen degradation [Reactome] (n=75)",
+            "Collagen formation [Reactome] (n=98)" ,
+            "Activation of matrix metalloproteinases [Reactome] (n=39)")])
+
+
+```
+
+# LEGACY
+
+```{r, alternative heatmap versions}
+
+# wide format
+# SPA: changed path.TA to conf$plot_path_ipf
+res.gsea.wide = res.gsea.fc.dir[ID %in% conf$plot_path_ipf] %>%
+  reshape::cast(dataset~ID, value = 'NES') %>%
+  data.frame %>%
+  tibble::remove_rownames() %>%
+  tibble::column_to_rownames('dataset') %>%
+  as.matrix
+
+# complex heatmap version
+ComplexHeatmap::Heatmap(
+  res.gsea.wide,
+  col=circlize::colorRamp2(c(min(res.gsea.wide), 0, max(res.gsea.wide)), colours.lmh()),
+  cluster_rows=F,
+  row_names_gp = grid::gpar(fontsize = 6),
+  column_names_gp = grid::gpar(fontsize = 6))
+
+# pheatmap version
+fig.ipf.gsea = pheatmap(
+  res.gsea.wide,
+  cluster_rows = F,
+  color=conf$pheatmap_pal(conf$col_gsea),
+  breaks=sym.breaks(res.gsea.wide),
+  gaps_row=c(5, 10),
+  treeheight_col = 20,
+  fontsize = 4,
+  width = 60 / 25.4,
+  height = 100 / 25.4,
+  filename = paste0(dir_out, '/legacy_IPF_anmod_old.pdf')
+  )
+
+```
+
+
+
+# Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

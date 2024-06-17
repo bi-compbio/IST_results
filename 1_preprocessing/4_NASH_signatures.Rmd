@@ -1,0 +1,451 @@
+---
+title: "Export NASH signatures for manuscript"
+author: "Sergi Picart"
+date: "19/11/2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+date()
+```
+
+Load data and libraries
+
+```{r, message=FALSE, warning=FALSE}
+library(SummarizedExperiment)
+
+library(tidyverse)
+library(magrittr)
+
+library(ggplot2)
+library(ggpmisc)
+library(plotly)
+library(pheatmap)
+
+conf <- config::get()
+# get directory from config.yml file
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$interimdata_nash_signatures_lfc)
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+file.nashhumanref <- paste0("../", conf$interimdata_nash_human)
+
+ref.q <- conf$threshold_dge_fdr
+ref.logfc <- conf$threshold_dge_logfc
+# remove small (<50DEG) signatures
+min.dge <- conf$threshold_dge_nsignif
+
+set.seed(42)
+```
+
+# CDAA
+
+```{r}
+file.cdaa <- paste0("../", conf$rawdata_nash_mouse_cdaa)
+
+env.cdaa <- new.env()
+env.cdaa$raw <- readRDS(file.cdaa)
+```
+
+```{r}
+env.cdaa$n.signif <- sapply(
+  env.cdaa$raw$dge,
+  function(df) dplyr::filter(df, abs(logFC) > ref.logfc & adj.P.Val < ref.q) %>% nrow()
+)
+env.cdaa$n.signif
+```
+
+```{r}
+env.cdaa$sig.meta <- data.frame(
+  contrast.name = c(
+    "CDAA_week_12-CSAA_week_12" # am
+  ),
+  contrast.label = c(
+    "CDAA 12w [Mouse]"
+  ),
+  contrast.type = "AnimalModel",
+  treatment = "None",
+  organism.name = "Mouse",
+  animal.model = "CDAA",
+  model.timepoint = "12w",
+  model.meta = NA,
+  tissue = "Liver",
+  disease = "NASH",
+  study.id = "CDAA",
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+env.cdaa$sig.list <- env.cdaa$raw$dge[env.cdaa$sig.meta$contrast.name] %>%
+  lapply(function(cnt) {
+    cnt[c("logFC", "adj.P.Val")]
+  })
+names(env.cdaa$sig.list) <- env.cdaa$sig.meta$contrast.label
+```
+
+# CCl4
+
+```{r}
+file.ccl4 <- paste0("../", conf$rawdata_nash_mouse_ccl4)
+
+env.ccl4 <- new.env()
+env.ccl4$raw <- readRDS(file.ccl4)
+```
+
+```{r}
+env.ccl4$n.signif <- sapply(
+  env.ccl4$raw$dge,
+  function(df) dplyr::filter(df, abs(logFC) > ref.logfc & adj.P.Val < ref.q) %>% nrow()
+)
+env.ccl4$n.signif
+```
+
+```{r}
+env.ccl4$sig.meta <- data.frame(
+  contrast.name = c(
+    "Liver_CCL4_week_8-Liver_Control", # am
+    "Liver_CCL4_week_8_recover_week_4-Liver_CCL4_week_8", # trt
+    "Liver_CCL4_week_8_recover_week_8-Liver_CCL4_week_8", # trt
+    "Liver_CCL4_week_8_recover_week_12-Liver_CCL4_week_8" # trt
+  ),
+  contrast.label = c(
+    "CCl4 08w [Mouse]",
+    "CCl4 recovery 04w [Mouse]",
+    "CCl4 recovery 08w [Mouse]",
+    "CCl4 recovery 12w [Mouse]"
+  ),
+  contrast.type = c(
+    "AnimalModel", "Treatment",
+    "Treatment", "Treatment"
+  ),
+  treatment = c(
+    "None", "Recovery.04w",
+    "Recovery.08w", "Recovery.12w"
+  ),
+  organism.name = "Mouse",
+  animal.model = "CCl4",
+  model.timepoint = "08w",
+  model.meta = NA,
+  tissue = "Liver",
+  disease = "NASH",
+  study.id = "Ccl4",
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+env.ccl4$sig.list <- env.ccl4$raw$dge[env.ccl4$sig.meta$contrast.name] %>%
+  lapply(function(cnt) {
+    cnt[c("logFC", "adj.P.Val")]
+  })
+names(env.ccl4$sig.list) <- env.ccl4$sig.meta$contrast.label
+```
+
+# BDL
+
+```{r}
+file.bdl <- paste0("../", conf$rawdata_nash_mouse_bdl)
+
+env.bdl <- new.env()
+env.bdl$raw <- readRDS(file.bdl)
+```
+
+```{r}
+env.bdl$n.signif <- sapply(
+  env.bdl$raw$dge,
+  function(df) dplyr::filter(df, abs(logFC) > ref.logfc & adj.P.Val < ref.q) %>% nrow()
+)
+env.bdl$n.signif
+```
+
+```{r}
+env.bdl$sig.meta <- data.frame(
+  contrast.name = c(
+    "Liver_BDL_D03-Liver_Sham_D03", # am
+    "Liver_BDL_D05-Liver_Sham_D05", # am
+    "Liver_BDL_D07-Liver_Sham_D07", # am
+    "Liver_BDL_D10-Liver_Sham_D10", # am
+    "Liver_BDL_D14-Liver_Sham_D14" # am
+  ),
+  contrast.label = c(
+    "BDL 03d [Mouse]",
+    "BDL 05d [Mouse]",
+    "BDL 07d [Mouse]",
+    "BDL 10d [Mouse]",
+    "BDL 14d [Mouse]"
+  ),
+  contrast.type = "AnimalModel",
+  treatment = "None",
+  organism.name = "Mouse",
+  animal.model = "BDL",
+  model.timepoint = c("03d", "05d", "07d", "10d", "14d"),
+  model.meta = NA,
+  tissue = "Liver",
+  disease = "NASH",
+  study.id = "BDL",
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+env.bdl$sig.list <- env.bdl$raw$dge[env.bdl$sig.meta$contrast.name] %>%
+  lapply(function(cnt) {
+    cnt[c("logFC", "adj.P.Val")]
+  })
+names(env.bdl$sig.list) <- env.bdl$sig.meta$contrast.label
+```
+
+# CDAA Elafibranor
+
+```{r}
+file.cdaa_elafib <- paste0("../", conf$rawdata_nash_mouse_cdaa_elafibranor)
+
+env.cdaa_elafib <- new.env()
+env.cdaa_elafib$raw <- readRDS(file.cdaa_elafib)
+```
+
+```{r}
+env.cdaa_elafib$n.signif <- sapply(
+  env.cdaa_elafib$raw$dge,
+  function(df) dplyr::filter(df, abs(logFC) > ref.logfc & adj.P.Val < ref.q) %>% nrow()
+)
+env.cdaa_elafib$n.signif
+```
+
+```{r}
+env.cdaa_elafib$sig.meta <- data.frame(
+  contrast.name = c(
+    "Liver_CDAA_Control_Vehicle-Liver_CSAA_Control_Vehicle",  #am
+    "Liver_CDAA_Elafibranor_15mg-Liver_CDAA_Control_Vehicle" #trt
+  ),
+  contrast.label = c(
+    "CDAA 11w [Mouse]", 
+    "CDAA+Elafibranor 11w [Mouse]"
+  ),
+  contrast.type = c("AnimalModel", "Treatment"),
+  treatment = c("None", "Elafibranor"),
+  organism.name = "Mouse",
+  animal.model = "CDAA",
+  model.timepoint = "11w",
+  model.meta = NA,
+  tissue = "Liver",
+  disease = "NASH",
+  study.id = "CDAA_Elafibranor",
+  stringsAsFactors = FALSE
+)
+```
+
+```{r}
+env.cdaa_elafib$sig.list <- env.cdaa_elafib$raw$dge[env.cdaa_elafib$sig.meta$contrast.name] %>%
+  lapply(function(cnt) {
+    cnt[c("logFC", "adj.P.Val")]
+  })
+names(env.cdaa_elafib$sig.list) <- env.cdaa_elafib$sig.meta$contrast.label
+```
+
+# Human
+
+```{r}
+# get all NASH disease contrasts from sumexp - disease progression from F0 onwards
+#  and disease reversal from F4 backwards
+# "se" must have the fibrosis_stage numeric variable 
+get_disease_contrasts <- function(se) {
+  se.orgto <- se[, se$fibrosis_stage %in% 0:4]
+
+  X <- assay(se.orgto)
+  y <- factor(se.orgto$fibrosis_stage, ordered = FALSE)
+  y.lv <- levels(droplevels(y))
+  message("\n** Reference healthy stage: ", head(y.lv, 1), "**\n")
+  
+  # disease
+  design <- stats::model.matrix(~F, data = data.frame(F = y))
+  stages <- paste0("F", y.lv[-1])
+  
+  fit <- limma::lmFit(X, design)
+  cnt <- limma::makeContrasts(contrasts = stages, levels = design)
+  fit.cnt <- limma::contrasts.fit(fit, cnt)
+  ebayes <- limma::eBayes(fit.cnt, robust = TRUE)
+  
+  # disease states Fx vs F0
+  list.de.disease <- lapply(
+    setNames(stages, paste0(stages, "vs", head(y.lv, 1))), 
+    limma::topTable, 
+    fit = ebayes, 
+    number = Inf,
+    adjust.method = "fdr", 
+    p.value = 1, 
+    lfc = 0
+  )
+  
+  # recovery
+  # redefine ref level
+  y <- relevel(y, ref = tail(y.lv, 1))
+  message("\n** Reference disease stage: ", tail(y.lv, 1), "**\n")
+  
+  design <- stats::model.matrix(~F, data = data.frame(F = y))
+  stages <- paste0("F", y.lv[-length(y.lv)])
+
+  fit <- limma::lmFit(X, design)
+  cnt <- limma::makeContrasts(contrasts = stages, levels = design)
+  fit.cnt <- limma::contrasts.fit(fit, cnt)
+  ebayes <- limma::eBayes(fit.cnt, robust = TRUE)
+
+  # disease states Fx vs F4
+  list.de.recovery <- lapply(
+    setNames(stages, paste0(stages, "vs", tail(y.lv, 1))),
+    limma::topTable,
+    fit = ebayes,
+    number = Inf,
+    adjust.method = "fdr",
+    p.value = 1,
+    lfc = 0
+  )
+  
+  c(list.de.disease, list.de.recovery)
+}
+
+```
+
+
+
+```{r}
+env.human <- new.env()
+
+# this function ran different human NASH se objects
+# now using only for the one used in the manuscript
+local({
+  # get DE genes
+  list.data <- list(
+    NASH_HVD = readRDS(file.nashhumanref) 
+  )
+  # names: dataset.Disease/RecoveryFx
+  list.de <- lapply(list.data, get_disease_contrasts)
+  
+  ### formatted list (flatten and subset) ###
+  ### ready for use
+  sig.list <- unlist(list.de, recursive = FALSE) %>%
+    lapply(magrittr::extract, c("logFC", "adj.P.Val"))
+  
+  # number of signatures per dataset
+  list.n <- sapply(list.de, length)
+  
+  list.meta <- lapply(list.data, metadata)
+  v.nm <- c("Harvard", "Dynasty", "MergedHarvDyn", "Hoang")
+  # v.id <- c("548", "RDG004", "RDG004_548", "EX279")
+  
+  # ids to append to the end of the label
+  v.id <- names(list.data)
+  # project paths
+  v.path <- sapply(list.meta, magrittr::extract2, "path")
+  # names dataset.FxvsFy
+  list.names <- strsplit(names(sig.list), split = "\\.")
+  
+  # FxvsFy (all combinations)
+  v.full.meta <- sapply(list.names, tail, 1)
+  # is it disease (ref 0) or recovery (ref 4)?
+  v.full.type <- (gsub("(.*)(\\d)$", "\\2", v.full.meta) == "0") %>%
+    ifelse("AnimalModel", "Treatment")
+  v.full.trt <- ifelse(v.full.type == "AnimalModel", "None", "Recovery")
+  
+  ### formatted metadata ###
+  ### ready for use
+  sig.meta <- data.frame(
+    contrast.name = names(sig.list),
+    # amended, ad-hoc labels for publication
+    contrast.label = c(
+        "NASH disease F1 [Human]",
+        "NASH disease F2 [Human]",
+        "NASH disease F3 [Human]",
+        "NASH disease F4 [Human]",
+        "NASH F4 recovery to F0 [Human]",
+        "NASH F4 recovery to F1 [Human]",
+        "NASH F4 recovery to F2 [Human]",
+        "NASH F4 recovery to F3 [Human]"
+    ),
+    contrast.type = v.full.type,
+    treatment = v.full.trt,
+    organism.name = "Human",
+    animal.model = "NASH",
+    model.timepoint = "",
+    model.meta = v.full.meta,
+    tissue = "Liver",
+    disease = "NASH",
+    study.id = rep(v.id, times = list.n),
+    stringsAsFactors = FALSE
+  )
+  
+  # amend signature names for publication
+  names(sig.list) <- sig.meta$contrast.label
+}, env.human)
+```
+
+
+Summary of significant genes in those contrasts
+
+```{r}
+lapply(env.human$sig.list, subset, abs(logFC) > ref.logfc & adj.P.Val < ref.q) %>% sapply(nrow) %>% data.frame(n = .)
+```
+
+
+# Export
+
+Merge and count number of significant genes
+
+```{r}
+# whole lists
+list.sig <- c(env.cdaa$sig.list, env.ccl4$sig.list, env.bdl$sig.list, env.human$sig.list, env.cdaa_elafib$sig.list)
+meta.sig <- dplyr::bind_rows(env.cdaa$sig.meta, env.ccl4$sig.meta, env.bdl$sig.meta, env.human$sig.meta, env.cdaa_elafib$sig.meta)
+
+# ensure default colnames match those expected by IST
+v.org <- c(Human = "hsapiens", Mouse = "mmusculus", Rat = "rnorvegicus")
+meta.sig <- mutate(meta.sig, 
+                   sig.id = contrast.label, 
+                   sig.name = contrast.label, 
+                   sig.org = v.org[organism.name])
+rownames(meta.sig) <- meta.sig$contrast.label
+
+# names match exactly by order
+stopifnot(all(names(list.sig) == meta.sig$contrast.label))
+
+# only keep significant genes
+list.sig.signif <- lapply(list.sig, subset, abs(logFC) > ref.logfc & adj.P.Val < ref.q)
+v.sig <- sapply(list.sig.signif, nrow)
+v.sig
+
+# include in metadata
+meta.sig$n.signif <- v.sig
+
+# don't keep any signature with too few genes
+stopifnot(!any(v.sig < min.dge))
+```
+
+Export the whole list, not only significant genes (GSEA, etc)
+
+```{r}
+# # takes about 5x space vs the rds file
+# plyr::ldply(list.sig, rownames_to_column, var = "ensg", .id = "Signature") %>%
+#     write.csv(paste0(dir_out, "/tab_NASH_signatures.csv"), row.names = FALSE)
+
+saveRDS(list.sig, paste0("../", conf$interimdata_nash_signatures_lfc), compress = "xz")
+saveRDS(list.sig.signif, paste0("../", conf$interimdata_nash_signatures_lfc_signif), compress = "xz")
+write.csv(meta.sig, paste0("../", conf$interimdata_nash_signatures_meta), row.names = TRUE)
+```
+
+## Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```

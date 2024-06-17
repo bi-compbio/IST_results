@@ -1,0 +1,199 @@
+---
+title: "Format the Harvard dataset"
+author: "Sergio Picart-Armada"
+date: "17th April, 2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE,
+  error = FALSE, warning = FALSE,
+  fig.height = 4
+)
+```
+
+# Load dataset
+
+```{r, message=FALSE}
+library(plyr)
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+
+library(SummarizedExperiment)
+
+source("../00_helpers.R")
+
+conf <- config::get()
+# get directory from config.yml file
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$interimdata_nash_human)
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+expr.hvd <- paste0("../", conf$rawdata_nash_human_expr)
+meta.hvd <- paste0("../", conf$rawdata_nash_human_meta)
+
+map.hsa <- read.csv(paste0("../", conf$interimdata_genemapping_tab))
+```
+
+```{r}
+
+df.ensg2symbol <- map.hsa %>%
+  group_by(ensembl_gene_id) %>%
+  summarise(hgnc_symbols = paste(hgnc_symbol, collapse = "|")) %>%
+  na.omit()
+
+add_rowdata_to_se <- function(se, df.map = df.ensg2symbol) {
+  rownm <- rownames(assay(se))
+
+  df.rowdata <- left_join(
+    data.frame(ensembl_gene_id = rownm, stringsAsFactors = FALSE),
+    df.map
+  ) %>%
+    set_rownames(rownm)
+
+  rowData(se) <- df.rowdata
+
+  se
+}
+```
+
+# Crease SumExp
+
+Cleaned dataset kindly provided by MW
+
+```{r, echo=FALSE}
+env.hsa <- new.env()
+load(expr.hvd, env.hsa)
+load(meta.hvd, env.hsa)
+
+se.nash.hvd <- local(
+  {
+    X <- dat.clean.sv.filt
+    # -1=stage0, 1=stage2
+    metadata$fibrosis_stage <- as.ordered(metadata$fibrosis_stage)
+    metadata$fibrosis_numeric <- as.numeric(as.character(metadata$fibrosis_stage))
+
+    metadata$steatosis_numeric <- metadata$steatosis_score
+    metadata$steatosis_score %<>% as.ordered
+
+    y <- (as.numeric(as.character(metadata$fibrosis_stage)) - 1) * -1
+    names(y) <- rownames(X)
+
+    metadata$ist.class <- 1 + -metadata$fibrosis_numeric/2
+    metadata$class <- as.ordered(paste0("Stage ", metadata$fibrosis_stage))
+
+    rownames(metadata) <- metadata$rownames <- as.character(metadata$sample)
+
+    stopifnot(all(rownames(X) == rownames(metadata)))
+
+    se <- SummarizedExperiment::SummarizedExperiment(
+      assays = t(X),
+      colData = metadata
+    ) %>% add_rowdata_to_se()
+
+    metadata(se) <- list(
+      disease = "NASH",
+      org.id = "hsapiens",
+      gene.id = "ensembl",
+      date = date()
+    )
+
+    se
+  },
+  env.hsa
+)
+```
+
+```{r}
+se.nash.hvd
+```
+
+Samples in stages 0 and 2/3:
+
+```{r}
+se.nash.hvd[, se.nash.hvd$fibrosis_numeric %in% c(0, 2, 3)]
+```
+
+# Sanity checks
+
+Rownames
+
+```{r}
+head(se.nash.hvd$rownames)
+stopifnot(all(se.nash.hvd$rownames == colnames(assay(se.nash.hvd))))
+```
+
+
+Stages
+
+```{r}
+head(se.nash.hvd$fibrosis_stage)
+head(se.nash.hvd$fibrosis_numeric)
+table(se.nash.hvd$fibrosis_stage)
+```
+
+Variable `y` (for IST):
+
+```{r}
+table(se.nash.hvd$fibrosis_stage, se.nash.hvd$ist.class)
+```
+
+
+Steatosis scores
+
+```{r}
+head(se.nash.hvd$steatosis_score)
+head(se.nash.hvd$steatosis_numeric)
+table(se.nash.hvd$steatosis_score)
+```
+
+Save sumexp
+
+```{r}
+saveRDS(se.nash.hvd,
+  file = paste0("../", conf$interimdata_nash_human),
+  compress = "xz"
+)
+```
+
+
+# Data summary
+
+## Fibrosis
+
+```{r}
+summarise_dataset(
+    se.nash.hvd,
+    quote.aes = aes(colour = fibrosis_stage)
+  ) +
+    theme_bw()
+```
+
+## Steatosis
+
+```{r}
+summarise_dataset(
+    se.nash.hvd,
+    quote.aes = aes(colour = steatosis_score)
+  ) +
+    theme_bw()
+```
+
+
+# Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```
+
+

@@ -1,0 +1,225 @@
+---
+title: "Export human datasets as used in manuscript"
+author: "Sergi Picart"
+date: "19/11/2020"
+output:
+  html_document:
+    toc: TRUE
+    toc_float: true
+    code_folding: hide
+    df_print: paged
+---
+
+# Introduction
+
+Time when Rmd rendering started
+
+```{r}
+date()
+```
+
+Load data and libraries
+
+```{r, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(magrittr)
+
+library(pcaMethods)
+
+library(ggplot2)
+
+library(SummarizedExperiment)
+
+conf <- config::get()
+# get directory from config.yml file
+dir_out <- gsub("(^.*/)([^/]+)(/[^/]+$)", "\\2", conf$interimdata_ipf_human)
+
+if (!dir.exists(dir_out)) dir.create(dir_out)
+
+set.seed(42)
+```
+
+
+# Read data from pipeline
+
+```{r, echo=FALSE}
+dat.ipf <- read.csv(paste0("../", conf$rawdata_ipf_human_expr), sep = "\t")
+
+meta.data.ipf <- read.csv(paste0("../", conf$rawdata_ipf_human_meta), sep = "\t")
+```
+
+Data dimensions:
+
+```{r}
+dim(dat.ipf)
+```
+
+Metadata dimensions:
+
+```{r}
+dim(meta.data.ipf)
+```
+
+Diagnostics from metadata:
+
+```{r}
+table(meta.data.ipf$Major_Diagnosis_Final_Clinical)
+```
+
+# Clean duplicates
+
+Number of duplicates, by identifier:
+
+```{r}
+rowdata <- dplyr::select(dat.ipf, Ensembl_Gene_ID, ProbeName, GENE_SYMBOL)
+lapply(rowdata, duplicated) %>% lapply(sum)
+```
+
+There are some repeated ENSEMBL ids.
+Keep only the genes with largest mean expression:
+
+```{r}
+# compute mean expression, sort (decreasing) by it and just keep
+# the first occurrence of every ensembl id
+# must keep track of the original row index as well
+df.meanexp <- data.frame(
+  ensembl = dat.ipf$Ensembl_Gene_ID, 
+  index = seq_len(nrow(dat.ipf)),
+  meanexpr = dplyr::select(dat.ipf, -Ensembl_Gene_ID, 
+                           -ProbeName, -GENE_SYMBOL) %>% rowMeans
+) %>%
+  dplyr::arrange(desc(meanexpr)) %>%
+  dplyr::filter(!duplicated(ensembl))
+
+ind.keep <- df.meanexp$index %>% sort
+dat.ipf.nodup <- dat.ipf[ind.keep, ]
+```
+
+New data dimensions:
+
+
+```{r}
+dim(dat.ipf.nodup)
+```
+
+```{r}
+assay <- dplyr::select(dat.ipf.nodup, -Ensembl_Gene_ID, -ProbeName, -GENE_SYMBOL) %>%
+  as.matrix %>%
+  set_rownames(dat.ipf.nodup$Ensembl_Gene_ID)
+
+rowdata <- dplyr::select(dat.ipf.nodup, Ensembl_Gene_ID, ProbeName, GENE_SYMBOL) %>%
+  set_rownames(dat.ipf.nodup$Ensembl_Gene_ID)
+
+coldata <- set_rownames(meta.data.ipf, meta.data.ipf$sample_id) %>%
+  dplyr::mutate(ist.class = ifelse(Major_Diagnosis_Final_Clinical == "1-ILD", -1, 1))
+```
+
+Summary of expression values (to ensure they are 
+already normalised and log transformed):
+
+```{r}
+summary(as.vector(assay))
+```
+
+Double check re-coding classes for IST (+1 control, -1 disease):
+
+```{r}
+table(coldata$ist.class)
+```
+
+# Prepare SummarizedExperiment object
+
+```{r}
+se.ipf.kaminsky <- SummarizedExperiment::SummarizedExperiment(
+  assays = list(assay = assay), 
+  rowData = rowdata, 
+  colData = coldata, 
+  metadata = list(disease = "IPF", 
+                  org.id = "hsapiens",
+                  gene.id = "ensembl",
+                  geo.id = "GSE47460")
+)
+```
+
+```{r}
+se.ipf.kaminsky
+```
+
+### PCA and medioids
+
+```{r}
+set.seed(1)
+pca <- pca(object = t(assay(se.ipf.kaminsky)), nPcs = 10, method = "svd", 
+           center = TRUE, scale = "uv", cv = "q2", fold = 5)
+nc <- which.max(pca@cvstat)
+
+plot(pca)
+df.pca <- cbind(scores(pca), colData(se.ipf.kaminsky)) %>%
+  as.data.frame()
+
+mat.pca <- scores(pca)[, 1:nc, drop = FALSE]
+dist.pca <- dist(mat.pca) %>% as.matrix 
+
+id.ipf <- rownames(df.pca)[df.pca$group == "IPF"]
+id.cnt <- rownames(df.pca)[df.pca$group != "IPF"]
+# medioids: https://en.wikipedia.org/wiki/Medoid
+id.ipf.medioids <- rowMeans(dist.pca[id.ipf, id.ipf]) %>% 
+  sort %>% head(length(id.cnt)) %>% names
+
+df.pca$medioids <- ifelse(rownames(df.pca) %in% id.ipf.medioids, "Yes", "No")
+
+ggplot(df.pca, aes(x = PC1, y = PC2, fill = group, colour = medioids)) +
+  geom_point(pch = 21) +
+  scale_colour_manual(values = c(No = "gray70", Yes = "black")) +
+  theme_bw()
+```
+Number of components:
+
+```{r}
+nc
+```
+
+
+
+```{r}
+# add PCA coordinates
+se.ipf.kaminsky$PC1 <- df.pca$PC1
+se.ipf.kaminsky$PC2 <- df.pca$PC2
+se.ipf.kaminsky$PC3 <- df.pca$PC3
+
+# add medioids data
+se.ipf.kaminsky$is.medioid <- se.ipf.kaminsky$sample_id %in% c(id.ipf.medioids, id.cnt)
+
+# group: to title case (for plots)
+v.caps <- c(control = "Control", IPF = "IPF")
+se.ipf.kaminsky$group.caps <- as.factor(as.character(v.caps[as.character(se.ipf.kaminsky$group)]))
+se.ipf.kaminsky$class <- as.ordered(se.ipf.kaminsky$group.caps)
+
+table(se.ipf.kaminsky$is.medioid, se.ipf.kaminsky$group.caps)
+```
+
+
+## Save
+
+Save and document object
+
+```{r}
+se.ipf.kaminsky.medioids <- se.ipf.kaminsky[, se.ipf.kaminsky$is.medioid]
+saveRDS(se.ipf.kaminsky.medioids, 
+     file = paste0("../", conf$interimdata_ipf_human), 
+     compress = "xz")
+```
+
+
+
+
+## Reproducibility
+
+```{r}
+date()
+```
+
+```{r}
+sessionInfo()
+```
